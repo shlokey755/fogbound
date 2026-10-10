@@ -1,0 +1,16 @@
+{
+  "name": "fogbound-signalling-server",
+  "version": "0.1.0",
+  "description": "WebSocket signalling server for Fogbound's online room-code mode (design doc section 4.3). Not required for local hotspot play. Carries no gameplay traffic -- only relays WebRTC offer/answer/candidate messages between a host and its clients so they can establish a direct P2P connection.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

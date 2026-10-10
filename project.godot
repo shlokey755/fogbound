@@ -1,0 +1,43 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+[application]
+
+config/name="Fogbound"
+config/description="2D cooperative multiplayer maze game. Teams tethered together must escape a foggy maze using scattered clues before their links snap."
+run/main_scene="res://scenes/main_menu.tscn"
+config/features=PackedStringArray("4.3", "GL Compatibility")
+config/icon="res://icon.svg"
+
+[autoload]
+
+GameState="*res://autoload/game_state.gd"
+ScoreTable="*res://autoload/score_table.gd"
+NetRouter="*res://autoload/net_router.gd"
+NetLocal="*res://autoload/net_local.gd"
+
+[display]
+
+window/size/viewport_width=320
+window/size/viewport_height=180
+window/stretch/mode="viewport"
+window/stretch/aspect="keep"
+window/handheld/orientation="landscape"
+
+[physics]
+
+common/physics_ticks_per_second=60
+2d/default_gravity=0
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/canvas_textures/default_texture_filter=0

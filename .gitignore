@@ -1,0 +1,20 @@
+# Godot 4 editor cache (regenerated automatically, never commit)
+.godot/
+.import/
+
+# Godot import artifacts for binary assets
+*.import
+
+# Exported builds
+export/
+*.pck
+*.apk
+*.aab
+
+# Node.js (signalling server, see server/)
+server/node_modules/
+server/npm-debug.log
+
+# OS / editor noise
+.DS_Store
+*.swp

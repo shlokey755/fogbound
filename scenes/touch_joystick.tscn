@@ -1,0 +1,43 @@
+[gd_scene load_steps=2 format=3 uid="uid://f7m4n1q6w3xyz"]
+
+[ext_resource type="Script" path="res://scripts/touch_joystick.gd" id="1"]
+
+[node name="TouchJoystick" type="Control"]
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = -76.0
+offset_right = 96.0
+offset_bottom = -16.0
+mouse_filter = 1
+script = ExtResource("1")
+
+[node name="Base" type="Control" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 1
+
+[node name="BaseVisual" type="ColorRect" parent="Base"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(1, 1, 1, 0.12)
+mouse_filter = 2
+
+[node name="Knob" type="Control" parent="Base"]
+layout_mode = 0
+offset_right = 24.0
+offset_bottom = 24.0
+mouse_filter = 2
+
+[node name="KnobVisual" type="ColorRect" parent="Base/Knob"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(1, 1, 1, 0.4)
+mouse_filter = 2
