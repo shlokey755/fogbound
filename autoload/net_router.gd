@@ -24,6 +24,56 @@ func register_game_node(node: Node) -> void:
 
 
 # ---------------------------------------------------------------------------
+# JSON round-trip normalization
+#
+# Godot's JSON encodes every number as a JSON number and decodes every
+# JSON number back as a float, and every JSON object's keys come back
+# as Strings -- never ints, even if they started as ints. Every RPC
+# below that does JSON.stringify(...)/JSON.parse_string(...) on
+# GameState data (teams, player_team, final_scores -- all keyed or
+# filled with peer/team ids) MUST pass the result through one of
+# these before anything calls .has()/indexes it with an int, because
+# Dictionary/Array lookups compare by exact Variant type: 1 != 1.0 for
+# Array.has(), and "0" != 0 for Dictionary key lookup, even though the
+# == operator alone would say they're equal. This bit a real feature
+# (the secret-level unlock check, which does pod.has(my_id) against
+# JSON-decoded data) in testing -- see tests/boot_game_smoketest.gd.
+# ---------------------------------------------------------------------------
+
+## Recursively converts a JSON.parse_string() result back toward int
+## where Godot's JSON round-trip turned an original int into a float
+## (any float with no fractional part) or a Dictionary key into a
+## String (any string that parses cleanly as an int). Leaves
+## everything else (actual floats with a fractional part, non-numeric
+## string keys like "name") untouched.
+static func _denormalize_json_ints(value):
+	if value is Dictionary:
+		var out := {}
+		for k in value:
+			var new_key = k
+			if k is String and k.is_valid_int():
+				new_key = k.to_int()
+			out[new_key] = _denormalize_json_ints(value[k])
+		return out
+	elif value is Array:
+		var out := []
+		for item in value:
+			out.append(_denormalize_json_ints(item))
+		return out
+	elif value is float and value == floor(value) and not is_inf(value) and not is_nan(value):
+		return int(value)
+	else:
+		return value
+
+
+## JSON.parse_string() + _denormalize_json_ints() in one call -- use
+## this instead of a bare JSON.parse_string() for any payload that
+## will later be looked up or compared by int peer_id/team_id.
+static func _parse_json_with_ints(json_str: String):
+	return _denormalize_json_ints(JSON.parse_string(json_str))
+
+
+# ---------------------------------------------------------------------------
 # Lobby: pod assignment, ready state, start
 # ---------------------------------------------------------------------------
 
@@ -58,8 +108,8 @@ func _assign_to_pod(peer_id: int, team_id: int) -> void:
 
 @rpc("authority", "call_local", "reliable")
 func net_lobby_state(teams_json: String, player_team_json: String) -> void:
-	GameState.teams = JSON.parse_string(teams_json)
-	GameState.player_team = JSON.parse_string(player_team_json)
+	GameState.teams = _parse_json_with_ints(teams_json)
+	GameState.player_team = _parse_json_with_ints(player_team_json)
 	lobby_state_changed.emit()
 
 
@@ -79,11 +129,13 @@ func host_check_can_start() -> Dictionary:
 
 
 @rpc("authority", "call_local", "reliable")
-func net_start_match(seed_value: int, w: int, h: int, teams_json: String) -> void:
+func net_start_match(seed_value: int, level_id: int, teams_json: String) -> void:
 	GameState.match_seed = seed_value
-	GameState.maze_w = w
-	GameState.maze_h = h
-	GameState.teams = JSON.parse_string(teams_json)
+	GameState.level_id = level_id
+	var level: LevelData.LevelDef = LevelData.get_level(level_id)
+	GameState.maze_w = level.width
+	GameState.maze_h = level.height
+	GameState.teams = _parse_json_with_ints(teams_json)
 	for team_id in GameState.teams:
 		GameState.teams[team_id]["original_size"] = GameState.teams[team_id]["member_order"].size()
 	GameState.match_started = true
@@ -184,9 +236,30 @@ func _pod_containing(peer_id: int) -> Array:
 
 @rpc("authority", "call_local", "reliable")
 func net_match_finished(scores_json: String) -> void:
-	GameState.final_scores = JSON.parse_string(scores_json)
+	GameState.final_scores = _parse_json_with_ints(scores_json)
 	GameState.match_over = true
+	_check_secret_level_unlock()
 	match_finished.emit()
+
+
+## Runs on every peer (this RPC is call_local), each checking only
+## its OWN device's SaveData -- unlocks are per-device, not
+## per-match, so a teammate who escaped intact unlocks the secret
+## level on their own machine's save file, not everyone else's.
+## Condition: finish LevelData.SECRET_LEVEL_UNLOCK_SOURCE_ID with a
+## pod that scored the top tier (1200 -- a complete, unbroken team;
+## see score_table.gd) and this device's own player was in that pod.
+func _check_secret_level_unlock() -> void:
+	if GameState.level_id != LevelData.SECRET_LEVEL_UNLOCK_SOURCE_ID:
+		return
+	var my_id: int = multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else 1
+	for entry in GameState.final_scores:
+		if entry.get("points", 0) < 1200:
+			continue
+		var pod: Array = entry.get("pod", [])
+		if pod.has(my_id):
+			SaveData.unlock_level(LevelData.SECRET_LEVEL_ID)
+			return
 
 
 func broadcast_match_finished() -> void:

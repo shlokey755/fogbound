@@ -24,6 +24,22 @@ layout_mode = 2
 text = "Lobby"
 horizontal_alignment = 1
 
+[node name="LevelRow" type="HBoxContainer" parent="VBox"]
+layout_mode = 2
+
+[node name="LevelLabel" type="Label" parent="VBox/LevelRow"]
+layout_mode = 2
+text = "Level:"
+
+[node name="LevelPicker" type="OptionButton" parent="VBox/LevelRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="LevelDescription" type="Label" parent="VBox"]
+layout_mode = 2
+autowrap_mode = 3
+text = ""
+
 [node name="PodList" type="VBoxContainer" parent="VBox"]
 layout_mode = 2
 size_flags_vertical = 3
