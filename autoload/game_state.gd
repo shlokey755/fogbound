@@ -29,8 +29,19 @@ const MAX_PLAYERS := 16
 # ---------------------------------------------------------------------------
 # Match state (host sets these; clients receive them via RPC)
 # ---------------------------------------------------------------------------
+## Mirrors LevelData.default_level_id() (id 2, "The Understreets") as
+## a plain constant rather than a call into the LevelData singleton.
+## reset_match() runs in some headless test contexts (`godot --headless
+## --script ...`) where [autoload] singletons are never instantiated
+## at all -- see docs/WALKTHROUGH.md "Testing" -- so a call out to
+## another autoload's method here would fail to even compile in that
+## context. Kept in sync with LevelData's own default by a test
+## assertion (tests/test_maze_generator.gd) rather than by sharing code.
+const DEFAULT_LEVEL_ID := 2
+
 var match_seed: int = 0
-var maze_w: int = 31
+var level_id: int = DEFAULT_LEVEL_ID
+var maze_w: int = 31    # derived from the chosen level; kept as a field for anything reading it directly
 var maze_h: int = 31
 
 # teams[team_id] = { "name": String, "original_size": int, "member_order": [peer_id, ...] }
@@ -57,6 +68,7 @@ var final_scores: Array = []
 
 func reset_match() -> void:
 	match_seed = 0
+	level_id = DEFAULT_LEVEL_ID
 	teams.clear()
 	pods.clear()
 	player_team.clear()

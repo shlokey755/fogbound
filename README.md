@@ -12,9 +12,20 @@ This repository is a playable **minimum viable version** of the design in [`docs
 | Local hotspot multiplayer (ENet) | Implemented |
 | Lobby (pod assignment, ready/start) | Implemented, minimal UI |
 | Online room-code multiplayer (WebRTC + signalling server) | Scaffolded, **not wired up** |
-| Art (sprites, tiles, audio) | Placeholder flat-color rectangles only |
+| Levels (6 difficulty classes + a secret level), per-level themes | Implemented, tested |
+| Seeded puzzle rooms joined by tunnels | Implemented, tested |
+| Developer commentary pickups | Implemented |
+| Character sprites (4 looks, team-colour shader), game icon | Generated pixel art, implemented |
+| Tile art, prop art, audio | Placeholder flat-color rectangles / none — see [`docs/ART_WALKTHROUGH.md`](docs/ART_WALKTHROUGH.md) |
 
 All three automated test suites pass against Godot 4.3-stable (see [Testing](#testing) below).
+
+## Levels, secrets and commentary
+
+- **Levels:** the lobby has a level picker (The Antechamber → The Labyrinth Proper). Each level sets maze size, fragment count, a colour theme, and how many puzzle rooms it has. The maze itself is freshly generated from the match seed every game. See `autoload/level_data.gd`.
+- **Puzzle rooms and tunnels:** every level places a few small rooms at seeded positions and joins them to the fog room with a chain of tunnels. The first fragments sit in those rooms, in tunnel order, so the trail is also the order the exit code is read in. All of it derives from the match seed, so every player builds the same layout without any extra networking.
+- **Secret level:** escape *The Labyrinth Proper* with your whole team still holding hands (a 1200-point finish) to unlock `???`. The unlock is saved per device (`autoload/save_data.gd`).
+- **Developer commentary:** a few glowing pickups are hidden in maze dead ends each match. Walking into one shows a short original note about how the game was designed. They are local and cosmetic, and never affect scoring. Notes are in `autoload/commentary_data.gd`.
 
 ## Requirements
 
@@ -42,11 +53,12 @@ See `docs/WALKTHROUGH.md` for a full build-up explanation of every system, in th
 autoload/     Singletons: game state, score table, networking (local + online scaffold)
 scenes/       .tscn scene files (menu, lobby, game, player, clue, pod card, score screen)
 scripts/      Gameplay logic: maze generator, tether system, pod graph, fog, clues, UI
-shaders/      Palette-swap shader for team colors (placeholder art pipeline)
-assets/       Placeholder sprites/tiles (flat-color rectangles — see docs/WALKTHROUGH.md "Art")
+shaders/      Palette-swap shader for team colors
+assets/       Character sprite sheets and game icon (generated); tiles/props are still placeholders
+tools/        Python generators for the sprites and icon (tools/make_sprites.py, tools/make_icon.py)
 server/       Node.js WebSocket signalling server for the (unwired) online mode
 tests/        Headless automated tests, runnable without the editor
-docs/         Design document and build walkthrough
+docs/         Design document, build walkthrough, and art implementation walkthrough
 ```
 
 ## Testing
@@ -58,6 +70,10 @@ GODOT=/path/to/godot ./tests/run_all_tests.sh
 ```
 
 This runs, in order: `PodGraph`/`ScoreTable` logic tests, `MazeGenerator` determinism/structure tests, and a full `game.tscn` boot smoketest (spawns real players, builds a real tether link, generates a real maze — using the actual autoloads, not mocks). All three currently pass against Godot 4.3-stable.
+
+## Replacing the art
+
+`docs/ART_WALKTHROUGH.md` explains how to swap in your own sprites, tiles, props and icon, step by step, with a "see it change" check for each one. Short version: repaint the character sheets (96×128, keep the magenta scarf markers) over the files in `assets/sprites/characters/`, then run `godot --headless --path . --import`.
 
 ## Design document
 

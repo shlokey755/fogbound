@@ -22,14 +22,18 @@ var maze: MazeGenerator
 var pod_graph: PodGraph
 var tether_system: TetherSystem
 var clue_spawner: ClueSpawner
+var commentary_spawner: CommentarySpawner
 var player_nodes: Dictionary = {}  # peer_id -> Player
 var link_lines: Dictionary = {}    # "a_id:b_id" -> Line2D
+
+const COMMENTARY_NODES_PER_MATCH := 3  # how many dev-commentary notes appear per maze, out of the full pool
 
 var _snapshot_accum := 0.0
 const SNAPSHOT_INTERVAL := 1.0 / 20.0
 
 var _console_entered_pods: Dictionary = {}  # pod key -> true, once unlocked
 var _scored_pods: Dictionary = {}           # pod key -> true, to avoid double scoring
+var _commentary_popup_token: int = 0        # guards against two notes' auto-hide timers racing each other
 
 
 func _ready() -> void:
@@ -63,10 +67,14 @@ func _physics_process(delta: float) -> void:
 # ---------------------------------------------------------------------------
 
 func _build_maze() -> void:
+	var level: LevelData.LevelDef = LevelData.get_level(GameState.level_id)
+	var commentary_count: int = mini(COMMENTARY_NODES_PER_MATCH, CommentaryData.total_count())
 	maze = MazeGenerator.new()
-	maze.generate(GameState.match_seed, GameState.maze_w, GameState.maze_h, 8)
+	maze.generate(GameState.match_seed, level.width, level.height, level.fragment_count, commentary_count,
+			level.puzzle_rooms, level.puzzle_room_size)
 
 	_paint_tilemap()
+	fog_controller.get_node("CanvasModulate").color = level.ambient_color
 
 	var fog_room_area: Area2D = fog_controller.get_node("FogRoomArea")
 	var room_shape: CollisionShape2D = fog_room_area.get_node("CollisionShape2D")
@@ -95,19 +103,30 @@ func _build_maze() -> void:
 	add_child(clue_spawner)
 	clue_spawner.spawn_fragments(maze)
 
+	commentary_spawner = CommentarySpawner.new()
+	add_child(commentary_spawner)
+	commentary_spawner.note_activated.connect(_on_commentary_activated)
+	commentary_spawner.spawn(maze, GameState.match_seed)
+
 
 func _paint_tilemap() -> void:
-	# Atlas coord (0,0) = floor, (1,0) = wall. The TileSet itself is
+	# Atlas coord (0,0) = floor, (1,0) = wall, (2,0) = puzzle-room floor
+	# (same collision as floor, just a different tint). The TileSet itself is
 	# built procedurally by MazeTileSetBuilder so the project runs
 	# without any editor-authored tile resource; swap in real art by
 	# assigning Maze.tile_set in the editor instead (see
 	# docs/WALKTHROUGH.md "Sprites") and deleting the line below.
 	if maze_layer.tile_set == null:
-		maze_layer.tile_set = MazeTileSetBuilder.build()
+		var level: LevelData.LevelDef = LevelData.get_level(GameState.level_id)
+		maze_layer.tile_set = MazeTileSetBuilder.build(level.floor_color, level.wall_color)
 	maze_layer.clear()
 	for y in range(maze.h):
 		for x in range(maze.w):
-			var coord := Vector2i(1, 0) if not maze.is_floor(x, y) else Vector2i(0, 0)
+			var coord := Vector2i(0, 0)
+			if not maze.is_floor(x, y):
+				coord = Vector2i(1, 0)
+			elif maze.is_puzzle_room_cell(x, y):
+				coord = Vector2i(2, 0)
 			maze_layer.set_cell(Vector2i(x, y), 0, coord)
 
 
@@ -331,3 +350,29 @@ func _on_fragment_revealed(fragment_id: int, symbol: String) -> void:
 
 func _on_match_finished() -> void:
 	get_tree().change_scene_to_file("res://scenes/score_screen.tscn")
+
+
+# ---------------------------------------------------------------------------
+# Developer commentary popup (purely cosmetic, local-only -- see
+# commentary_node.gd / commentary_spawner.gd)
+# ---------------------------------------------------------------------------
+
+func _on_commentary_activated(note: CommentaryData.Note) -> void:
+	var popup: PanelContainer = $HUD/CommentaryPopup
+	var title_label: Label = $HUD/CommentaryPopup/VBox/TitleLabel
+	var body_label: Label = $HUD/CommentaryPopup/VBox/BodyLabel
+	title_label.text = note.title
+	body_label.text = note.body
+	popup.visible = true
+
+	# Auto-hide after a few seconds rather than requiring a dismiss
+	# button -- this is flavor text, not something blocking play. The
+	# token guards against walking into a second note before the
+	# first one's timer fires: only the MOST RECENT timer is allowed
+	# to hide the popup, so an early note can't blank out a later one.
+	_commentary_popup_token += 1
+	var my_token := _commentary_popup_token
+	var timer := get_tree().create_timer(6.0)
+	timer.timeout.connect(func():
+		if is_instance_valid(popup) and my_token == _commentary_popup_token:
+			popup.visible = false)
