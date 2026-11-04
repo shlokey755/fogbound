@@ -20,7 +20,11 @@ The minimum viable version from the design doc (section 16) is implemented and p
 | Local Wi-Fi hotspot multiplayer | `autoload/net_local.gd`, `autoload/net_router.gd` | Done |
 | Lobby (pod assignment, ready/start) | `scripts/lobby.gd`, `scripts/pod_card.gd` | Done, minimal UI |
 | Online room-code multiplayer | `autoload/net_online.gd`, `server/` | **Scaffolded, not wired up** — see Phase 6 |
-| Real art, audio, polish | — | **Not started** — placeholder flat colors only |
+| Level table, per-level themes, secret level | `autoload/level_data.gd`, `autoload/save_data.gd` | Done, tested |
+| Seeded puzzle rooms + tunnel chain | `scripts/maze_generator.gd` | Done, unit-tested |
+| Developer commentary pickups | `autoload/commentary_data.gd`, `scripts/commentary_*.gd` | Done |
+| Character sprites, team palette shader, icon | `scripts/player_sprites.gd`, `shaders/`, `tools/`, `assets/` | Done (generated art) |
+| Tile art, prop art, audio | — | **Not started** — see `docs/ART_WALKTHROUGH.md` |
 
 Three headless test suites cover the logic layer; see "Testing" below.
 
@@ -67,7 +71,19 @@ A recursive-backtracker (DFS) maze carved onto an odd-sized grid, seeded with `R
 2. Seed the DFS from multiple points around the fog room's perimeter, so corridors radiate outward in several directions instead of the fog room being a dead end.
 3. Run the DFS over the rest of the grid.
 4. Knock out a handful of extra walls to add loops (a perfect maze — no loops — is usually less fun and makes a single snapped tether catastrophic, since there'd be only one path back together).
-5. Place the exit at the floor cell closest to the outer border, and scatter fragment cells on any remaining floor tile outside both the fog room and the exit.
+5. Place the seeded puzzle rooms and tunnels (see below).
+6. Place the exit at the floor cell closest to the outer border. Fragments go in the puzzle rooms first (in tunnel order), and any remainder on random floor tiles outside the fog room, the exit and the rooms.
+
+### Puzzle rooms and seeded tunnels
+
+`generate(seed, w, h, fragment_count, commentary_count, puzzle_room_count, puzzle_room_size)` takes the room count and size from the level's `with_puzzles(...)` entry in `autoload/level_data.gd`. Everything below draws from the same seeded `rng` as the rest of the maze, so a seed always gives the same layout on every client:
+
+1. **Place rooms.** Pick odd-aligned top-left corners at random and keep a room if it stays 2 cells clear of the border, the fog room and the rooms already placed. If the maze is too crowded it simply places fewer.
+2. **Order them into a chain.** Starting from the fog room, hop to the nearest remaining room, or randomly the second-nearest, so the trail isn't always the obvious one. The result is `maze.puzzle_rooms`.
+3. **Carve tunnels.** For each hop, carve an L-shaped one-cell-wide tunnel between room anchors (odd-coordinate cells, so tunnels stay on the corridor lattice). A seeded coin flip chooses horizontal-first or vertical-first. The cells are recorded in `maze.tunnel_paths[i]`.
+4. **Put fragments at the room centres** in chain order, so fragment *i* is both the *i*-th symbol of the exit code and the *i*-th room on the trail.
+
+With `puzzle_room_count = 0` no RNG is consumed, so seeds that existed before this feature build exactly the maze they used to (there's a test for that). The tests also sweep 40 seeds per property: rooms are floor, off the border, off the fog room, non-overlapping, and every room, fragment and the exit are reachable from the spawn.
 
 **Why this is `class_name MazeGenerator extends RefCounted` and not a `Node`:** it has no scene tree dependency. Every client calls `generate()` with the same seed (sent once by the host at match start) and gets an identical grid back — see `test_maze_generator.gd`'s determinism test. This is also why it's cheap to unit-test: no scene instantiation needed, just construct one and call `generate()`.
 
@@ -147,13 +163,15 @@ Ratio-based and data-driven (a `TIERS` array of `{min_ratio, points}`), so it is
 
 ## 9. Placeholder art (`scripts/maze_tileset_builder.gd`)
 
-Rather than requiring you to open the editor and hand-author a `TileSet` resource before the project will even run, `MazeTileSetBuilder.build()` constructs one entirely in code: two tiles (floor, wall) as flat-color `ImageTexture`s, with the wall tile carrying both a collision polygon and an occlusion polygon (so the lighting system in section 5 above works immediately). `game_controller._paint_tilemap()` calls this only if `Maze.tile_set` is still unset in the scene, so swapping in real art later is a one-line change: assign a real `TileSet` to the `Maze` node in `game.tscn` via the editor, and delete the `if maze_layer.tile_set == null` fallback.
+Rather than requiring you to open the editor and hand-author a `TileSet` resource before the project will even run, `MazeTileSetBuilder.build()` constructs one entirely in code: three tiles (floor, wall, puzzle-room floor) as flat-color `ImageTexture`s, with the wall tile carrying both a collision polygon and an occlusion polygon (so the lighting system in section 5 above works immediately). `game_controller._paint_tilemap()` calls this only if `Maze.tile_set` is still unset in the scene, so swapping in real art later is a one-line change: assign a real `TileSet` to the `Maze` node in `game.tscn` via the editor, and delete the `if maze_layer.tile_set == null` fallback.
 
-### Building real sprites (when you get there)
+Character sprites and the icon are no longer placeholders: they are generated pixel art (`tools/make_sprites.py`, `tools/make_icon.py`) wired up through `PlayerSprites` and the team palette shader. **For how to replace any of this art with your own, see `docs/ART_WALKTHROUGH.md`.**
+
+### Building the rest of the art
 
 Follow design doc section 8 (sizes, the per-team palette-swap shader already stubbed in `shaders/`, the asset checklist). Suggested order:
 
-1. Player sprite sheet (idle/walk/pulled/eliminated) at 16×16, drawn with a marker color (pure magenta) for the parts that should recolor per team — the shader in `shaders/` already does the swap, it just needs a real texture to operate on.
+1. ~~Player sprite sheet~~ — done (4 characters, 8 animations, magenta marker scarf recoloured per team).
 2. Floor/wall tiles at 16×16, built as a proper `TileSet` in the editor (with auto-tiling/terrain sets for walls so corners join correctly) — this replaces `MazeTileSetBuilder`.
 3. Clue, console, and exit gate sprites.
 4. UI icons (joystick, ping, tension ring, warning).
@@ -171,8 +189,8 @@ GODOT=/path/to/godot ./tests/run_all_tests.sh
 | Suite | What it covers | How it runs |
 |---|---|---|
 | `tests/test_pod_graph.gd` | Chain/split/remove graph logic, score tiers | `godot --headless --script ...` (pure logic, no scene) |
-| `tests/test_maze_generator.gd` | Determinism for a given seed, structural sanity (special cells are floor, border is solid, fragments don't overlap the fog room or exit) | Same, pure logic |
-| `tests/boot_smoketest.tscn` + `tests/boot_game_smoketest.gd` | Actually instantiates `game.tscn` with real autoloads, spawns real players, builds a real tether link, runs ~2 seconds of physics | `godot --headless --path . res://tests/boot_smoketest.tscn` (a real scene boot, *not* `--script`, because `--script` mode does not run project autoloads — this is the one place that matters) |
+| `tests/test_maze_generator.gd` | Determinism for a given seed, structural sanity (special cells are floor, border is solid, fragments don't overlap the fog room or exit), commentary placement, and the seeded puzzle rooms / tunnel chain (45 checks across many seeds) | Same, pure logic |
+| `tests/boot_smoketest.tscn` + `tests/boot_game_smoketest.gd` | Actually instantiates `game.tscn` with real autoloads, spawns real players, builds a real tether link, runs ~2 seconds of physics. Also checks every real level in `LevelData`, the character sprite pipeline, and the secret-level unlock flow | `godot --headless --path . res://tests/boot_smoketest.tscn` (a real scene boot, *not* `--script`, because `--script` mode does not run project autoloads — this is the one place that matters) |
 
 All three currently pass against Godot 4.3-stable. If you add a new system, prefer extending the pure-logic suites (fast, no scene tree) and reserve the boot smoketest for things that only break when real nodes and autoloads are involved (like the `TileSet`-must-be-attached-before-touching-TileData ordering bug noted in `maze_tileset_builder.gd` — that class of bug is invisible to a pure unit test).
 

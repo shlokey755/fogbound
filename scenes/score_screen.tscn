@@ -29,6 +29,12 @@ horizontal_alignment = 1
 [node name="ResultsList" type="VBoxContainer" parent="VBox"]
 layout_mode = 2
 
+[node name="UnlockBanner" type="Label" parent="VBox"]
+layout_mode = 2
+autowrap_mode = 3
+horizontal_alignment = 1
+visible = false
+
 [node name="BackButton" type="Button" parent="VBox"]
 layout_mode = 2
 text = "Back to menu"

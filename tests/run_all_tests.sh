@@ -8,6 +8,12 @@ set -euo pipefail
 GODOT="${GODOT:-godot}"
 cd "$(dirname "$0")/.."
 
+# Import assets first: sprite sheets are PNGs, and a fresh clone has no
+# imported copies until the editor (or this) generates them.
+echo "== Importing assets =="
+"$GODOT" --headless --path . --import >/dev/null 2>&1 || true
+echo
+
 echo "== Pure-logic tests (PodGraph, ScoreTable) =="
 "$GODOT" --headless --path . --script res://tests/test_pod_graph.gd
 

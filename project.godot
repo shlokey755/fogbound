@@ -20,6 +20,9 @@ config/icon="res://icon.svg"
 
 GameState="*res://autoload/game_state.gd"
 ScoreTable="*res://autoload/score_table.gd"
+SaveData="*res://autoload/save_data.gd"
+LevelData="*res://autoload/level_data.gd"
+CommentaryData="*res://autoload/commentary_data.gd"
 NetRouter="*res://autoload/net_router.gd"
 NetLocal="*res://autoload/net_local.gd"
 
