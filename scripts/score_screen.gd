@@ -34,6 +34,11 @@ func _populate() -> void:
 	for child in results_list.get_children():
 		child.queue_free()
 
+	if GameState.offline_mode:
+		var verdict := Label.new()
+		verdict.text = "You escaped!" if _human_scored() else "You didn't make it out."
+		results_list.add_child(verdict)
+
 	if GameState.final_scores.is_empty():
 		var label := Label.new()
 		label.text = "No pod reached the exit."
@@ -44,8 +49,16 @@ func _populate() -> void:
 		var label := Label.new()
 		var pod: Array = entry["pod"]
 		var team_name: String = GameState.teams.get(entry["team_id"], {}).get("name", "Pod")
-		label.text = "%s — %d players — %d points" % [team_name, pod.size(), entry["points"]]
+		var you := " (you)" if GameState.offline_mode and pod.has(GameState.human_id) else ""
+		label.text = "%s%s — %d players — %d points" % [team_name, you, pod.size(), entry["points"]]
 		results_list.add_child(label)
+
+
+func _human_scored() -> bool:
+	for entry in GameState.final_scores:
+		if entry["pod"].has(GameState.human_id):
+			return true
+	return false
 
 
 func _on_back_pressed() -> void:

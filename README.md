@@ -10,6 +10,7 @@ This repository is a playable **minimum viable version** of the design in [`docs
 |---|---|
 | Maze generation, fog, tether physics, pod graph, scoring | Implemented, unit-tested |
 | Local hotspot multiplayer (ENet) | Implemented |
+| Offline mode: you + bot teammates, optional rival bot pods, 3 skill levels | Implemented, tested (full simulated matches) |
 | Lobby (pod assignment, ready/start) | Implemented, minimal UI |
 | Online room-code multiplayer (WebRTC + signalling server) | Scaffolded, **not wired up** |
 | Levels (6 difficulty classes + a secret level), per-level themes | Implemented, tested |
@@ -18,7 +19,29 @@ This repository is a playable **minimum viable version** of the design in [`docs
 | Character sprites (4 looks, team-colour shader), game icon | Generated pixel art, implemented |
 | Tile art, prop art, audio | Placeholder flat-color rectangles / none — see [`docs/ART_WALKTHROUGH.md`](docs/ART_WALKTHROUGH.md) |
 
-All three automated test suites pass against Godot 4.3-stable (see [Testing](#testing) below).
+All four automated test suites pass against Godot 4.3-stable (see [Testing](#testing) below).
+
+## Play offline (bots)
+
+No network, no friends needed: **Play offline (bots)** on the main menu opens a setup screen.
+
+| Setting | Range | Default | Meaning |
+|---|---|---|---|
+| Level | any unlocked level | The Understreets | Same level table as hosted play |
+| Bot mates | 1-7 | 2 | Bots chained to you in your pod |
+| Rivals | 0-3 | 1 | Rival bot pods racing you to the same exit |
+| Rival size | 2-5 | 3 | Players per rival pod |
+| Skill | Easy / Normal / Hard | Normal | Bot speed, how far they look, how early they ease off the rope |
+| Seed | number or blank | random | Same seed + level = same maze |
+
+The total is capped at 16 players, like a hosted match. Controls are the same as hosted play (WASD/arrows or the on-screen joystick); **Menu** (top-right) or Esc leaves the match.
+
+- **You are the pod leader.** Your bot teammates follow you along the chain and stop a short distance behind, so the rope stays slack unless you sprint. Run too far, too fast and the rope still snaps, exactly as in a hosted match.
+- **Bots play fair.** They only know the tiles their team has actually seen (same fog rules as you), read the same fragments, decode at the same console, and must all stand on the exit together to score. A bot-led pod collects fragments, uses the console, then walks to the exit, slowing before its own rope gets tight.
+- **Rivals are a race, not a fight.** Rival pods can lose members to snaps and be eliminated like any pod. Their lights and ropes are hidden from you (their pods are only visible when they are inside your lit area).
+- **The match ends** when your pod escapes or is eliminated; the score screen shows every pod, with yours marked "(you)".
+
+Under the hood offline mode is not a separate game: with no network peer Godot's default `OfflineMultiplayerPeer` makes your process its own host (peer id 1), so the normal host-authoritative match runs unchanged and bots take peer ids 2 and up. See `docs/WALKTHROUGH.md` section 8b.
 
 ## Levels, secrets and commentary
 
@@ -42,7 +65,7 @@ All three automated test suites pass against Godot 4.3-stable (see [Testing](#te
 3. Other instances/devices type the host's IP and click **Join**.
    - On real phones: the host turns on its Wi-Fi hotspot, the others connect to it, then join using the host's hotspot IP (shown on the host's screen once it starts hosting).
    - Local-network broadcast discovery is attempted automatically but isn't reliable on every hotspot — manual IP entry always works as a fallback.
-4. In the lobby, form pods (minimum 2 players each) and the host starts the match once every pod meets the minimum.
+4. (Or skip all of this and use **Play offline (bots)** - see above.) In the lobby, form pods (minimum 2 players each) and the host starts the match once every pod meets the minimum.
 5. Move with WASD/arrow keys (desktop) or the on-screen joystick (touch). Walk into clue tablets to read them, bring your pod's combined knowledge to the console in the fog room, then get everyone to the exit gate while it's still unlocked.
 
 See `docs/WALKTHROUGH.md` for a full build-up explanation of every system, in the order you'd want to build or study it.
@@ -52,7 +75,7 @@ See `docs/WALKTHROUGH.md` for a full build-up explanation of every system, in th
 ```
 autoload/     Singletons: game state, score table, networking (local + online scaffold)
 scenes/       .tscn scene files (menu, lobby, game, player, clue, pod card, score screen)
-scripts/      Gameplay logic: maze generator, tether system, pod graph, fog, clues, UI
+scripts/      Gameplay logic: maze generator, tether system, pod graph, fog, clues, UI, bot AI (bot_*.gd), offline setup screen
 shaders/      Palette-swap shader for team colors
 assets/       Character sprite sheets and game icon (generated); tiles/props are still placeholders
 tools/        Python generators for the sprites and icon (tools/make_sprites.py, tools/make_icon.py)
@@ -63,13 +86,13 @@ docs/         Design document, build walkthrough, and art implementation walkthr
 
 ## Testing
 
-Three independent suites, runnable headlessly without opening the editor:
+Four independent suites, runnable headlessly without opening the editor:
 
 ```bash
 GODOT=/path/to/godot ./tests/run_all_tests.sh
 ```
 
-This runs, in order: `PodGraph`/`ScoreTable` logic tests, `MazeGenerator` determinism/structure tests, and a full `game.tscn` boot smoketest (spawns real players, builds a real tether link, generates a real maze — using the actual autoloads, not mocks). All three currently pass against Godot 4.3-stable.
+This runs, in order: `PodGraph`/`ScoreTable` logic tests, `MazeGenerator` determinism/structure tests, bot AI tests (navigation, fog-fair knowledge, mission priorities, steering, and simulated matches), and a full `game.tscn` boot smoketest (spawns real players, builds a real tether link, generates a real maze, and plays complete offline bot matches — using the actual autoloads, not mocks). All four currently pass against Godot 4.3-stable in about 15 seconds.
 
 ## Replacing the art
 

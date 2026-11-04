@@ -62,6 +62,19 @@ var exit_sequence: Array = []
 var match_started: bool = false
 var match_over: bool = false
 
+# ---------------------------------------------------------------------------
+# Offline mode (one human + bots, no network peer). With no peer Godot's
+# default OfflineMultiplayerPeer makes this process its own host with
+# unique id 1, so the human is always peer 1 and bots take ids 2 and up.
+# Bot ids only need to be unique inside one offline match; a future "fill
+# empty slots with bots online" mode would need ids that can't collide
+# with ENet's random peer ids.
+# ---------------------------------------------------------------------------
+var offline_mode: bool = false
+var human_id: int = 1
+## bots[peer_id] = { "skill": int }  -- index into BotBrain.SKILLS
+var bots: Dictionary = {}
+
 # final_scores: Array of { "pod": [peer_ids], "team_id": int, "points": int }
 var final_scores: Array = []
 
@@ -77,7 +90,24 @@ func reset_match() -> void:
 	match_started = false
 	match_over = false
 	final_scores.clear()
+	offline_mode = false
+	human_id = 1
+	bots.clear()
 
 
 func is_host() -> bool:
 	return multiplayer.multiplayer_peer != null and multiplayer.is_server()
+
+
+func is_bot(peer_id: int) -> bool:
+	return bots.has(peer_id)
+
+
+## Team id the offline human belongs to, or -1 (online, or not found).
+func human_team_id() -> int:
+	if not offline_mode:
+		return -1
+	for team_id in teams:
+		if teams[team_id]["member_order"].has(human_id):
+			return team_id
+	return -1

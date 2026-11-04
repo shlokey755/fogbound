@@ -30,6 +30,7 @@ func _gui_input(event: InputEvent) -> void:
 			current_dir = Vector2.ZERO
 			knob.position = base.size * 0.5 - knob.size * 0.5
 			direction_changed.emit(current_dir)
+			NetRouter.send_input(Vector2.ZERO)  # _process stops sending once released, so say "stop" explicitly
 	elif event is InputEventScreenDrag and event.index == _touch_index:
 		var delta: Vector2 = event.position - _origin
 		var clamped: Vector2 = delta.limit_length(max_radius)

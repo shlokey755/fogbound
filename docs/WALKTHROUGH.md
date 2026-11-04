@@ -24,9 +24,10 @@ The minimum viable version from the design doc (section 16) is implemented and p
 | Seeded puzzle rooms + tunnel chain | `scripts/maze_generator.gd` | Done, unit-tested |
 | Developer commentary pickups | `autoload/commentary_data.gd`, `scripts/commentary_*.gd` | Done |
 | Character sprites, team palette shader, icon | `scripts/player_sprites.gd`, `shaders/`, `tools/`, `assets/` | Done (generated art) |
+| Offline mode + bots | `scripts/offline_setup.gd`, `scripts/bot_*.gd` | Done, tested — see section 8b |
 | Tile art, prop art, audio | — | **Not started** — see `docs/ART_WALKTHROUGH.md` |
 
-Three headless test suites cover the logic layer; see "Testing" below.
+Four headless test suites cover the logic layer; see "Testing" below.
 
 ---
 
@@ -161,6 +162,71 @@ Ratio-based and data-driven (a `TIERS` array of `{min_ratio, points}`), so it is
 
 ---
 
+## 8b. Offline mode and bots
+
+### Offline is the host path
+
+With no multiplayer peer set, Godot gives the process an `OfflineMultiplayerPeer`: `has_multiplayer_peer()` is true, the unique id is 1 and `is_server()` is true. `call_local` RPCs run, `call_remote` ones do not. So the host-authoritative match (tether system, pods, scoring) runs **unchanged**; offline mode only adds a few fields to `GameState`:
+
+| Field | Meaning |
+|---|---|
+| `offline_mode` | True for a match started from the offline setup screen |
+| `human_id` | Always 1: the player driven by input |
+| `bots` | `peer_id -> {"skill": int}`; bots take ids 2 and up |
+| `is_bot(id)`, `human_team_id()` | Helpers; `human_team_id()` is -1 when not offline |
+
+`OfflineSetup.configure_match(level, mates, rivals, rival_size, skill, seed, autoplay=false)` fills those in, builds the teams (team 0 is "Your pod", rivals are "Rivals A/B/C"), and calls the same `NetRouter.net_start_match` a hosted match uses. `autoplay = true` makes your slot a bot too, so a whole match plays itself; the tests use it to run complete matches headlessly.
+
+### Bot AI (`scripts/bot_*.gd`)
+
+| File | Job |
+|---|---|
+| `bot_nav.gd` | Cell/pixel conversion and a grid line-of-sight test |
+| `bot_knowledge.gd` | One per team: the set of tiles the team has seen, plus A* over only those tiles. This is what makes bots fog-fair: they cannot path through a corridor nobody has looked at |
+| `bot_mission.gd` | Picks a pod leader's goal. Priority: exit (once unlocked) > console (once every fragment is read) > nearest unread fragment > nearest unexplored frontier > wait. Goals are sticky so the leader does not dither between two equal choices |
+| `bot_brain.gd` | Steering for one bot: walks cell centre to cell centre, squares up at corners, repaths every 0.5 s, detects being stuck. Leaders slow down as pod rope tension rises; followers run to close the gap, then hold still a short distance away |
+| `bot_controller.gd` | Per tick, per pod: picks the leader (you, if you are in the pod, else the first living member), points followers at their chain neighbour, and once the exit is open and the leader is near it, sends the whole pod onto the gate together |
+
+Skill table (`BotBrain.SKILLS`):
+
+| Skill | Top speed (x move speed) | Sight (tiles) | Starts easing off at rope tension |
+|---|---|---|---|
+| Easy | 0.70 | 2 | 62% |
+| Normal | 0.85 | 3 | 50% |
+| Hard | 1.00 | 4 | 42% |
+
+Easy is slow and short-sighted; Hard is fast and looks far, but starts easing off the rope earliest. In the tests a Hard pod finishes faster than an Easy one, and the longest rope any bot pod reached was 40 px of the 96 px maximum, so none came near a snap.
+
+### Offline-only choices
+
+- **Players pass through each other.** Collision exceptions are added between all players in offline matches only, so bots can never deadlock each other or you in a one-tile corridor. Hosted matches are unchanged.
+- **Rival pods are hidden.** Their lights are off and their ropes are not drawn for you.
+- **Match end.** Offline, the match ends when your pod escapes or is eliminated (a rival pod being eliminated does not end it).
+
+### MVP gaps this work had to fix
+
+Playing alone exposed things the hotspot MVP never needed:
+
+| Gap | Fix |
+|---|---|
+| No camera: the world sat at a fixed offset | A smoothed `Camera2D` follows the local player |
+| Keyboard input never stopped on key release | Keys send one zero vector on release |
+| On-screen joystick did nothing for the host | `NetRouter.send_input` applies directly when you are the host |
+| The host never saw its own fragment reveals | `net_fragment_revealed` is now `call_local` |
+| Match never ended when a pod was eliminated | `_eliminate_small_pods` re-checks the end condition |
+| Console/exit only reacted on entry | Overlapping bodies are re-checked every 0.25 s |
+| Menus overflowed the 320x180 viewport | `CompactTheme` shrinks the font |
+| Out-of-maze space rendered grey | Default clear colour is near-black |
+
+### Known limitations
+
+- Bots are not added to hosted/online matches. If you do, ids 2.. would collide with real peer ids.
+- A hotspot client does not spawn `Player` nodes in the MVP (hosted play limitation, unrelated to bots).
+- Rival bots never interact with you (no blocking, no stealing fragments).
+- The secret level can be unlocked from an offline win.
+
+---
+
 ## 9. Placeholder art (`scripts/maze_tileset_builder.gd`)
 
 Rather than requiring you to open the editor and hand-author a `TileSet` resource before the project will even run, `MazeTileSetBuilder.build()` constructs one entirely in code: three tiles (floor, wall, puzzle-room floor) as flat-color `ImageTexture`s, with the wall tile carrying both a collision polygon and an occlusion polygon (so the lighting system in section 5 above works immediately). `game_controller._paint_tilemap()` calls this only if `Maze.tile_set` is still unset in the scene, so swapping in real art later is a one-line change: assign a real `TileSet` to the `Maze` node in `game.tscn` via the editor, and delete the `if maze_layer.tile_set == null` fallback.
@@ -180,7 +246,7 @@ Follow design doc section 8 (sizes, the per-team palette-swap shader already stu
 
 ## 10. Testing
 
-Three independent suites, none requiring the editor:
+Four independent suites, none requiring the editor:
 
 ```bash
 GODOT=/path/to/godot ./tests/run_all_tests.sh
@@ -190,9 +256,10 @@ GODOT=/path/to/godot ./tests/run_all_tests.sh
 |---|---|---|
 | `tests/test_pod_graph.gd` | Chain/split/remove graph logic, score tiers | `godot --headless --script ...` (pure logic, no scene) |
 | `tests/test_maze_generator.gd` | Determinism for a given seed, structural sanity (special cells are floor, border is solid, fragments don't overlap the fog room or exit), commentary placement, and the seeded puzzle rooms / tunnel chain (45 checks across many seeds) | Same, pure logic |
-| `tests/boot_smoketest.tscn` + `tests/boot_game_smoketest.gd` | Actually instantiates `game.tscn` with real autoloads, spawns real players, builds a real tether link, runs ~2 seconds of physics. Also checks every real level in `LevelData`, the character sprite pipeline, and the secret-level unlock flow | `godot --headless --path . res://tests/boot_smoketest.tscn` (a real scene boot, *not* `--script`, because `--script` mode does not run project autoloads — this is the one place that matters) |
+| `tests/test_bots.gd` | Bot navigation and line of sight, fog-fair knowledge, mission priorities and stickiness, steering hysteresis, solo bots finishing every level, two-bot rope sims (longest rope per skill), the skill table | `--script`, pure logic over a generated maze |
+| `tests/boot_smoketest.tscn` + `tests/boot_game_smoketest.gd` | Actually instantiates `game.tscn` with real autoloads, spawns real players, builds a real tether link, runs ~2 seconds of physics. Also checks every real level in `LevelData`, the character sprite pipeline, the secret-level unlock flow, and offline mode: config and the 16-player cap, scene wiring (camera, lights, ropes, bot follow), two complete autoplay matches, elimination ending the match, the menu and Menu button | `godot --headless --fixed-fps 60 --path . res://tests/boot_smoketest.tscn` (a real scene boot, *not* `--script`, because `--script` mode does not run project autoloads. `--fixed-fps 60` runs physics as fast as the CPU allows: the two autoplay matches, about five simulated minutes, take a couple of seconds) |
 
-All three currently pass against Godot 4.3-stable. If you add a new system, prefer extending the pure-logic suites (fast, no scene tree) and reserve the boot smoketest for things that only break when real nodes and autoloads are involved (like the `TileSet`-must-be-attached-before-touching-TileData ordering bug noted in `maze_tileset_builder.gd` — that class of bug is invisible to a pure unit test).
+All four currently pass against Godot 4.3-stable. A parse error in the smoketest script leaves its scene idling instead of failing, so `run_all_tests.sh` wraps it in a timeout and requires `ALL TESTS PASSED` in the output. If you add a new system, prefer extending the pure-logic suites (fast, no scene tree) and reserve the boot smoketest for things that only break when real nodes and autoloads are involved (like the `TileSet`-must-be-attached-before-touching-TileData ordering bug noted in `maze_tileset_builder.gd` — that class of bug is invisible to a pure unit test).
 
 ---
 

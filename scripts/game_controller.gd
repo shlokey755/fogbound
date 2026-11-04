@@ -21,6 +21,7 @@ const PlayerScene := preload("res://scenes/player.tscn")
 var maze: MazeGenerator
 var pod_graph: PodGraph
 var tether_system: TetherSystem
+var bot_controller: BotController
 var clue_spawner: ClueSpawner
 var commentary_spawner: CommentarySpawner
 var player_nodes: Dictionary = {}  # peer_id -> Player
@@ -34,6 +35,8 @@ const SNAPSHOT_INTERVAL := 1.0 / 20.0
 var _console_entered_pods: Dictionary = {}  # pod key -> true, once unlocked
 var _scored_pods: Dictionary = {}           # pod key -> true, to avoid double scoring
 var _commentary_popup_token: int = 0        # guards against two notes' auto-hide timers racing each other
+var _match_finish_sent := false             # the finish broadcast must go out exactly once
+var _zone_poll_t := 0.0
 
 
 func _ready() -> void:
@@ -49,10 +52,13 @@ func _ready() -> void:
 		_host_setup_tether_and_pods()
 		exit_gate.body_entered.connect(_on_exit_body_entered)
 		console_area.body_entered.connect(_on_console_body_entered)
+		if GameState.offline_mode:
+			_setup_offline_extras()
 
 
 func _physics_process(delta: float) -> void:
 	_update_tether_lines()
+	_poll_zones(delta)
 
 	if GameState.is_host() or not multiplayer.has_multiplayer_peer():
 		_snapshot_accum += delta
@@ -143,6 +149,7 @@ func _host_spawn_players() -> void:
 			var p: Player = PlayerScene.instantiate()
 			p.peer_id = peer_id
 			p.team_id = team_id
+			p.is_bot = GameState.is_bot(peer_id)
 			p.position = spawn_pos + Vector2(i * 4 - 20, 0)
 			players_node.add_child(p)
 			player_nodes[peer_id] = p
@@ -164,6 +171,51 @@ func _host_setup_tether_and_pods() -> void:
 			tether_system.add_link(player_nodes[a_id], a_id, player_nodes[b_id], b_id)
 
 	GameState.pods = pod_graph.recompute_pods()
+
+
+## Offline matches: players pass through each other (bots would otherwise
+## deadlock in one-tile corridors the moment a leader turns round) and the
+## bots get their brain.
+func _setup_offline_extras() -> void:
+	var ids: Array = player_nodes.keys()
+	for a in ids:
+		for b in ids:
+			if a != b:
+				player_nodes[a].add_collision_exception_with(player_nodes[b])
+	if not GameState.bots.is_empty():
+		bot_controller = BotController.new()
+		add_child(bot_controller)
+		bot_controller.setup(self, maze)
+	_add_quit_button()
+
+
+## Offline matches have no lobby to fall back to, so give the player a way out
+## (button top-right, or Esc). Hosted matches end only by the rules.
+func _add_quit_button() -> void:
+	var button := Button.new()
+	button.name = "QuitButton"
+	button.text = "Menu"
+	button.focus_mode = Control.FOCUS_NONE
+	button.add_theme_font_size_override("font_size", 8)
+	button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	button.offset_left = -34
+	button.offset_right = -2
+	button.offset_top = 2
+	button.offset_bottom = 16
+	button.pressed.connect(quit_to_menu)
+	$HUD.add_child(button)
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if GameState.offline_mode and event.is_action_pressed("ui_cancel"):
+		quit_to_menu()
+
+
+func quit_to_menu() -> void:
+	if NetRouter.match_finished.is_connected(_on_match_finished):
+		NetRouter.match_finished.disconnect(_on_match_finished)
+	GameState.reset_match()
+	get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
 
 
 func apply_input(peer_id: int, dir: Vector2) -> void:
@@ -188,6 +240,7 @@ func _eliminate_small_pods() -> void:
 			any_removed = true
 	if any_removed:
 		GameState.pods = pod_graph.recompute_pods()
+		_check_match_finished()  # losing a pod can be what ends the match
 
 
 func on_player_disconnected(peer_id: int) -> void:
@@ -253,12 +306,54 @@ func _on_exit_body_entered(body: Node) -> void:
 
 
 func _check_match_finished() -> void:
-	# Match ends once every surviving pod has either scored or been eliminated.
+	if _match_finish_sent:
+		return
+	# Offline, the match is about the human's pod: it ends as soon as that pod
+	# has escaped or been eliminated, and rival pods still in the maze simply
+	# don't score.
+	if GameState.offline_mode and _human_resolved():
+		_finish_match()
+		return
+	# Otherwise it ends once every surviving pod has either scored or been eliminated.
 	for pod in GameState.pods:
 		var key := _pod_key(pod)
 		if not _scored_pods.has(key) and pod.size() >= GameState.MIN_TEAM_SIZE:
 			return
+	_finish_match()
+
+
+func _finish_match() -> void:
+	_match_finish_sent = true
 	NetRouter.broadcast_match_finished()
+
+
+func _human_resolved() -> bool:
+	var human: Player = player_nodes.get(GameState.human_id)
+	if human == null or human.eliminated:
+		return true
+	var pod: Array = pod_graph.pod_of(GameState.human_id, GameState.pods)
+	return pod.size() >= GameState.MIN_TEAM_SIZE and _scored_pods.has(_pod_key(pod))
+
+
+## True once this pod has opened the exit at the console.
+func is_pod_unlocked(pod: Array) -> bool:
+	return _console_entered_pods.has(_pod_key(pod))
+
+
+## body_entered only fires on the way IN, so a pod whose last fragment is read
+## while someone is already standing on the console would never unlock.
+## Re-run the (idempotent) handlers a few times a second for whoever is inside.
+func _poll_zones(delta: float) -> void:
+	if not GameState.is_host() or pod_graph == null:
+		return
+	_zone_poll_t -= delta
+	if _zone_poll_t > 0.0:
+		return
+	_zone_poll_t = 0.25
+	for body in console_area.get_overlapping_bodies():
+		_on_console_body_entered(body)
+	for body in exit_gate.get_overlapping_bodies():
+		_on_exit_body_entered(body)
 
 
 func _pod_key(pod: Array) -> String:
@@ -320,6 +415,8 @@ func _update_tether_lines() -> void:
 				tether_lines.add_child(line)
 				link_lines[key] = line
 			var line: Line2D = link_lines[key]
+			# Design doc 8.4: you see your OWN pod's ropes through the fog, not rivals'.
+			line.visible = not GameState.offline_mode or link.a.team_id == GameState.human_team_id()
 			line.points = link.path if link.path.size() > 0 else PackedVector2Array([link.a.position, link.b.position])
 			line.default_color = _tension_color(link.state)
 
