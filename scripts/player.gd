@@ -9,6 +9,11 @@ extends CharacterBody2D
 @export var peer_id: int = 1
 @export var team_id: int = 0
 
+## Bots are driven by BotController instead of a keyboard/touch. They set
+## input_dir and speed_scale (a fraction of MOVE_SPEED) every physics tick.
+var is_bot: bool = false
+var speed_scale: float = 1.0
+
 var pull_velocity: Vector2 = Vector2.ZERO
 var pull_cap: float = 0.0  # fraction of MOVE_SPEED allowed this tick, set by TetherSystem
 
@@ -27,14 +32,36 @@ const TEAM_SHADER := preload("res://shaders/team_palette.gdshader")
 var _has_art := false          # false until a sprite sheet loads; the ColorRect placeholder shows meanwhile
 var _last_pos := Vector2.ZERO  # for deriving facing/walking from actual motion (works on clients too)
 var _facing := "down"          # "down" | "up" | "side"
+var _kb_active := false        # keyboard was giving a direction last tick (so we can send exactly one "stop")
 
 
 func _ready() -> void:
-	is_local = (peer_id == multiplayer.get_unique_id()) or (not multiplayer.has_multiplayer_peer())
+	is_local = not is_bot and ((peer_id == multiplayer.get_unique_id()) or (not multiplayer.has_multiplayer_peer()))
 	if label:
-		label.text = str(peer_id)
+		label.text = ("B%d" % peer_id) if is_bot else str(peer_id)
 	_setup_sprite()
 	_update_light_radius()
+	if is_local:
+		_add_camera()
+	_hide_rival_light()
+
+
+## 320x180 view = 20x11 tiles at 16 px (design doc section 3.1). Only the
+## local human gets one; bots and remote players never move the view.
+func _add_camera() -> void:
+	var cam := Camera2D.new()
+	cam.position_smoothing_enabled = true
+	cam.position_smoothing_speed = 10.0
+	add_child(cam)
+	cam.make_current()
+
+
+## Design doc 5.4: only your own pod carries light you can see by. In an
+## offline match, rival pods' lights are switched off so they only show up
+## when your own lights fall on them.
+func _hide_rival_light() -> void:
+	if light and GameState.offline_mode and team_id != GameState.human_team_id():
+		light.enabled = false
 
 
 ## Character look comes from the peer id and scarf colour from the team
@@ -100,18 +127,20 @@ func _physics_process(delta: float) -> void:
 	# player directly, so you can test with "Run multiple instances"
 	# without touching a touchscreen. See docs/WALKTHROUGH.md "Testing".
 	if is_local:
+		# Send the direction while a key is held and exactly one zero when it is
+		# released. (Sending only non-zero directions meant releasing the key
+		# never stopped you.) Not sending every idle tick keeps the keyboard
+		# from overriding the touch joystick, which feeds the same path.
 		var dir := Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
-		if dir != Vector2.ZERO:
-			if GameState.is_host():
-				set_input(dir)
-			else:
-				NetRouter.send_input(dir)
+		if dir != Vector2.ZERO or _kb_active:
+			NetRouter.send_input(dir)
+		_kb_active = dir != Vector2.ZERO
 
 	# Host (or offline single-process testing) applies real movement +
 	# tether pull. Non-host clients just interpolate toward replicated
 	# snapshots (handled by net_router's snapshot apply, not here).
 	if GameState.is_host() or not multiplayer.has_multiplayer_peer():
-		var move: Vector2 = input_dir.normalized() * GameState.MOVE_SPEED
+		var move: Vector2 = input_dir.normalized() * GameState.MOVE_SPEED * speed_scale
 		var capped_pull: Vector2 = pull_velocity.limit_length(pull_cap * GameState.MOVE_SPEED)
 		velocity = move + capped_pull
 		move_and_slide()

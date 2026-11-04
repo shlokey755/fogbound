@@ -5,6 +5,11 @@ extends Node
 ## headless run, where [autoload] singletons are real. Not part of
 ## the shipped game -- see docs/WALKTHROUGH.md "Testing".
 ##
+## Offline mode (one human + bots) is covered by the passes at the bottom:
+## wiring, a complete autoplay match, elimination ending the match, and the
+## setup screen's limits. They need `--fixed-fps 60` (tests/run_all_tests.sh
+## passes it) so a few simulated minutes take seconds of wall time.
+##
 ## Covers two passes:
 ##   1. A normal 2-player match on the default level -- players spawn,
 ##      the maze generates, exactly one tether link forms.
@@ -37,6 +42,11 @@ func _ready() -> void:
 	_run_level_table_pass()
 	await _run_basic_match_pass()
 	await _run_secret_level_unlock_pass()
+	_run_offline_config_pass()
+	await _run_offline_wiring_pass()
+	await _run_offline_autoplay_pass()
+	await _run_offline_elimination_pass()
+	await _run_offline_menu_pass()
 
 	print("ALL TESTS PASSED" if ok else "SOME TESTS FAILED")
 	get_tree().quit(0 if ok else 1)
@@ -244,3 +254,231 @@ func _run_secret_level_unlock_pass() -> void:
 
 func _selectable_ids() -> Array:
 	return LevelData.selectable_levels().map(func(lvl): return lvl.id)
+
+
+# ---------------------------------------------------------------------------
+# Offline mode (human + bots)
+# ---------------------------------------------------------------------------
+
+## Instantiates game.tscn for an already-configured offline match. The game's
+## finish handler swaps to the score screen, which would free THIS test's
+## scene tree, so it is unhooked here.
+func _spawn_offline_game() -> Node:
+	var instance: Node = load("res://scenes/game.tscn").instantiate()
+	add_child(instance)
+	NetRouter.match_finished.disconnect(instance._on_match_finished)
+	return instance
+
+
+func _frames(n: int) -> void:
+	for i in range(n):
+		await get_tree().physics_frame
+
+
+func _total_players(ui: OfflineSetup) -> int:
+	return OfflineSetup.total_players(int(ui._teammates.value), int(ui._rivals.value), int(ui._rival_size.value))
+
+
+func _run_offline_config_pass() -> void:
+	var lvl: LevelData.LevelDef = LevelData.levels[2]
+	OfflineSetup.configure_match(lvl.id, 2, 1, 3, BotBrain.Skill.HARD, 31337)
+	_check("offline config: flags, level and seed land in GameState",
+		GameState.offline_mode and GameState.human_id == 1 and GameState.level_id == lvl.id and GameState.match_seed == 31337)
+	var bot_ids := GameState.bots.keys()
+	bot_ids.sort()
+	_check("offline config: you are peer 1 and never a bot; bots take ids 2..6", bot_ids == [2, 3, 4, 5, 6] and not GameState.is_bot(1))
+	_check("offline config: every bot carries the chosen skill",
+		GameState.bots.values().all(func(b): return b["skill"] == BotBrain.Skill.HARD))
+	_check("offline config: your pod is you first, then your bots, original size 3",
+		GameState.teams[0]["member_order"] == [1, 2, 3] and GameState.teams[0]["original_size"] == 3)
+	_check("offline config: rival pod is its own team of 3", GameState.teams[1]["member_order"] == [4, 5, 6]
+		and GameState.teams[1]["name"] == "Rivals A" and GameState.teams[1]["original_size"] == 3)
+	_check("offline config: player_team and human_team_id agree",
+		GameState.player_team[1] == 0 and GameState.player_team[5] == 1 and GameState.human_team_id() == 0)
+
+	OfflineSetup.configure_match(0, 1, 0, 3, BotBrain.Skill.EASY, 5)
+	_check("offline config: zero rivals gives one team and one bot", GameState.teams.size() == 1 and GameState.bots.size() == 1)
+
+	OfflineSetup.configure_match(0, 1, 0, 3, BotBrain.Skill.EASY, 5, true)
+	_check("offline config: autoplay hands your slot to a bot too", GameState.is_bot(1) and GameState.bots.size() == 2)
+
+	GameState.reset_match()
+	_check("reset_match clears offline mode, bots and the human team",
+		not GameState.offline_mode and GameState.bots.is_empty() and GameState.human_team_id() == -1)
+
+	# Setup screen: defaults, and the 16-player cap holds whatever order the
+	# three counters are changed in.
+	var ui := OfflineSetup.new()
+	add_child(ui)
+	_check("setup screen: defaults are you + 2 bots vs 1 rival pod of 3 (6 players)", _total_players(ui) == 6)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7
+	var worst := 0
+	var in_range := true
+	for i in range(600):
+		match rng.randi() % 3:
+			0: ui._teammates.value = rng.randi_range(1, 7)
+			1: ui._rivals.value = rng.randi_range(0, 3)
+			2: ui._rival_size.value = rng.randi_range(2, 5)
+		worst = maxi(worst, _total_players(ui))
+		if ui._teammates.value < 1 or ui._rival_size.value < 2:
+			in_range = false
+	_check("setup screen: 600 random changes never exceed %d players (worst %d)" % [GameState.MAX_PLAYERS, worst],
+		worst <= GameState.MAX_PLAYERS)
+	_check("setup screen: you always keep at least one teammate and rival pods at least 2", in_range)
+	ui.queue_free()
+	GameState.reset_match()
+
+
+## Offline game scene: who spawns, who is driven, who sees, who follows.
+func _run_offline_wiring_pass() -> void:
+	OfflineSetup.configure_match(LevelData.default_level_id(), 2, 1, 3, BotBrain.Skill.NORMAL, 9001)
+	var game := _spawn_offline_game()
+	await _frames(30)
+
+	_check("offline: 6 players spawn (you, 2 bots, 3 rivals)", game.player_nodes.size() == 6)
+	_check("offline: you are driven by input, everyone else by a bot",
+		not game.player_nodes[1].is_bot and game.player_nodes.keys().filter(func(id): return id != 1)
+			.all(func(id): return game.player_nodes[id].is_bot))
+	var human: Player = game.player_nodes[1]
+	_check("offline: you are the local player and have a camera", human.is_local and _has_camera(human))
+	_check("offline: bots are not local and have no camera",
+		game.player_nodes.keys().filter(func(id): return id != 1).all(
+			func(id): return not game.player_nodes[id].is_local and not _has_camera(game.player_nodes[id])))
+	_check("offline: your pod carries light, rival pods do not (fog is fair)",
+		game.player_nodes[2].light.enabled and human.light.enabled
+		and game.player_nodes[4].light.enabled == false and game.player_nodes[6].light.enabled == false)
+	_check("offline: one rope per neighbouring pair (2 + 2 links)", game.tether_system.links.size() == 4)
+	var visible_lines := 0
+	for line in game.link_lines.values():
+		if line.visible:
+			visible_lines += 1
+	_check("offline: only your own pod's ropes are drawn (%d of %d)" % [visible_lines, game.link_lines.size()],
+		visible_lines == 2 and game.link_lines.size() == 4)
+	_check("offline: a BotController exists with a brain per bot",
+		game.bot_controller != null and game.bot_controller.brains.size() == 5)
+	_check("offline: a Menu button is on the HUD to leave the match",
+		game.has_node("HUD/QuitButton") and game.get_node("HUD/QuitButton").pressed.get_connections().size() > 0)
+	_check("offline: players can walk through each other (no bot deadlocks in corridors)",
+		human.get_collision_exceptions().has(game.player_nodes[2]))
+
+	var rival_start: Vector2 = game.player_nodes[4].position
+
+	# Walk the human down the longest open run from the spawn, then stop.
+	var nav: BotNav = game.bot_controller.nav
+	var cell := nav.cell_of(human.position)
+	var best_dir := Vector2i.RIGHT
+	var best_run := -1
+	for d in [Vector2i.RIGHT, Vector2i.LEFT, Vector2i.UP, Vector2i.DOWN]:
+		var run := 0
+		while game.maze.is_floor(cell.x + d.x * (run + 1), cell.y + d.y * (run + 1)):
+			run += 1
+		if run > best_run:
+			best_run = run
+			best_dir = d
+	var start: Vector2 = human.position
+	NetRouter.send_input(Vector2(best_dir))
+	await _frames(60)
+	NetRouter.send_input(Vector2.ZERO)
+	_check("offline: input reaches the human (moved %.0f px)" % start.distance_to(human.position),
+		start.distance_to(human.position) > 20.0)
+	await _frames(20)
+	var stopped_at: Vector2 = human.position
+	await _frames(30)
+	_check("offline: releasing the input stops the human", stopped_at.distance_to(human.position) < 0.5)
+
+	await _frames(240)
+	var team_links_alive: int = game.tether_system.links.filter(
+		func(l): return l.a_id <= 3 and l.b_id <= 3 and l.alive).size()
+	_check("offline: your rope chain is intact after the walk", team_links_alive == 2)
+	_check("offline: bot teammates tuck in behind you (gaps %.0f and %.0f px)" % [
+			human.position.distance_to(game.player_nodes[2].position),
+			game.player_nodes[2].position.distance_to(game.player_nodes[3].position)],
+		human.position.distance_to(game.player_nodes[2].position) < 48.0
+		and game.player_nodes[2].position.distance_to(game.player_nodes[3].position) < 48.0)
+	_check("offline: the rival pod is exploring on its own (moved %.0f px)" % rival_start.distance_to(game.player_nodes[4].position),
+		rival_start.distance_to(game.player_nodes[4].position) > 16.0)
+	_check("offline: the match is still running", not GameState.match_over)
+
+	game.queue_free()
+	await get_tree().process_frame
+	GameState.reset_match()
+
+
+func _has_camera(p: Node) -> bool:
+	return p.get_children().any(func(c): return c is Camera2D)
+
+
+## Nobody drives: every player, you included, is a bot. The match has to run
+## to its end by itself -- read fragments, open the exit, escape together --
+## without a snap.
+func _run_offline_autoplay_pass() -> void:
+	for setup in [
+		{"level": LevelData.default_level_id(), "mates": 1, "rivals": 1, "size": 2, "skill": BotBrain.Skill.NORMAL, "seed": 4242},
+		{"level": LevelData.default_level_id(), "mates": 3, "rivals": 0, "size": 2, "skill": BotBrain.Skill.EASY, "seed": 77},
+	]:
+		OfflineSetup.configure_match(setup["level"], setup["mates"], setup["rivals"], setup["size"], setup["skill"], setup["seed"], true)
+		var label := "autoplay seed %d (%d bots, skill %s)" % [setup["seed"], GameState.bots.size(), BotBrain.skill_name(setup["skill"])]
+		var game := _spawn_offline_game()
+		var frames := 0
+		var cap := 60 * 400
+		while not GameState.match_over and frames < cap:
+			await get_tree().physics_frame
+			frames += 1
+		_check("%s: match ends on its own (%.0f sim s)" % [label, frames / 60.0], GameState.match_over)
+		var yours = GameState.final_scores.filter(func(e): return e["pod"].has(1))
+		_check("%s: your pod reached the exit" % label, yours.size() == 1)
+		if yours.size() == 1:
+			_check("%s: unbroken team scores the top tier" % label,
+				yours[0]["points"] == 1200 and yours[0]["pod"].size() == GameState.teams[0]["original_size"])
+		var snapped: int = game.tether_system.links.filter(func(l): return not l.alive).size()
+		_check("%s: no rope snapped on the way (%d snapped)" % [label, snapped], snapped == 0)
+		_check("%s: nobody was eliminated" % label,
+			game.player_nodes.values().all(func(p): return not p.eliminated))
+		game.queue_free()
+		await get_tree().process_frame
+		GameState.reset_match()
+
+
+## The match is about YOUR pod: losing it ends the match once; a rival pod
+## being lost does not.
+func _run_offline_elimination_pass() -> void:
+	OfflineSetup.configure_match(LevelData.default_level_id(), 1, 1, 2, BotBrain.Skill.NORMAL, 77)
+	var game := _spawn_offline_game()
+	await _frames(10)
+	var finished := [0]
+	var counter := func(): finished[0] += 1
+	NetRouter.match_finished.connect(counter)
+
+	var rival_link = game.tether_system.links.filter(func(l): return l.a_id == 3)[0]
+	game.tether_system._snap(rival_link)
+	await _frames(3)
+	_check("offline: losing a rival pod does not end the match",
+		not GameState.match_over and finished[0] == 0 and game.player_nodes[3].eliminated and game.player_nodes[4].eliminated)
+
+	var own_link = game.tether_system.links.filter(func(l): return l.a_id == 1)[0]
+	game.tether_system._snap(own_link)
+	await _frames(3)
+	_check("offline: losing your own pod ends the match", GameState.match_over and game.player_nodes[1].eliminated)
+	_check("offline: nobody scored", GameState.final_scores.is_empty())
+	game._check_match_finished()
+	await _frames(2)
+	_check("offline: the finish is announced exactly once", finished[0] == 1)
+
+	NetRouter.match_finished.disconnect(counter)
+	game.queue_free()
+	await get_tree().process_frame
+	GameState.reset_match()
+
+
+func _run_offline_menu_pass() -> void:
+	var menu: Control = load("res://scenes/main_menu.tscn").instantiate()
+	add_child(menu)
+	var button: Button = menu.get_node("VBox/OfflineButton")
+	_check("main menu: has a wired 'Play offline' button", button.text.begins_with("Play offline")
+		and button.pressed.get_connections().size() > 0)
+	menu.queue_free()
+
+	var setup_scene: PackedScene = load("res://scenes/offline_setup.tscn")
+	_check("offline setup scene loads", setup_scene != null and setup_scene.can_instantiate())
+	await get_tree().process_frame
