@@ -1,9 +1,10 @@
 extends Control
 ## MainMenu
-## Entry point: host or join over LAN hotspot. Online room codes
-## (design doc section 4.3) are not wired up in this MVP -- see
-## docs/WALKTHROUGH.md for the follow-up phase.
+## Entry point: play offline against bots, or host / join over LAN hotspot.
+## Online room codes (design doc section 4.3) are not wired up in this MVP --
+## see docs/WALKTHROUGH.md for the follow-up phase.
 
+@onready var offline_button: Button = $VBox/OfflineButton
 @onready var host_button: Button = $VBox/HostButton
 @onready var join_button: Button = $VBox/JoinButton
 @onready var ip_field: LineEdit = $VBox/IPField
@@ -12,9 +13,15 @@ extends Control
 
 
 func _ready() -> void:
+	theme = CompactTheme.make()  # seven rows do not fit at the default font size in a 320x180 view
+	offline_button.pressed.connect(_on_offline_pressed)
 	host_button.pressed.connect(_on_host_pressed)
 	join_button.pressed.connect(_on_join_pressed)
 	NetLocal.peer_list_changed.connect(_on_peer_list_changed)
+
+
+func _on_offline_pressed() -> void:
+	get_tree().change_scene_to_file("res://scenes/offline_setup.tscn")
 
 
 func _on_host_pressed() -> void:

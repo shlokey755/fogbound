@@ -17,7 +17,11 @@ func _ready() -> void:
 
 
 func _on_body_entered(body: Node) -> void:
-	if body is Player and body.is_local:
+	if not (body is Player):
+		return
+	if body.is_bot:
+		NetRouter.bot_read_fragment(body.peer_id, fragment_id)
+	elif body.is_local:
 		NetRouter.request_read_fragment(fragment_id)
 
 

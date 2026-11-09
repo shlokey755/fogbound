@@ -155,8 +155,13 @@ func net_input(dir_x: float, dir_y: float) -> void:
 		game_node.apply_input(sender, Vector2(dir_x, dir_y))
 
 
+## Local player's movement input. The host (and an offline player, who is
+## their own host) applies it directly; clients send it to the host.
 func send_input(dir: Vector2) -> void:
-	if multiplayer.has_multiplayer_peer() and not GameState.is_host():
+	if GameState.is_host():
+		if game_node and game_node.has_method("apply_input"):
+			game_node.apply_input(multiplayer.get_unique_id(), dir)
+	elif multiplayer.has_multiplayer_peer():
 		net_input.rpc_id(1, dir.x, dir.y)
 
 
@@ -200,6 +205,12 @@ func request_read_fragment(fragment_id: int) -> void:
 		net_read_fragment.rpc_id(1, fragment_id)
 
 
+## Bots have no peer of their own, so the host reads on their behalf.
+func bot_read_fragment(bot_id: int, fragment_id: int) -> void:
+	if GameState.is_host() and GameState.is_bot(bot_id):
+		_host_read_fragment(bot_id, fragment_id)
+
+
 @rpc("any_peer", "call_remote", "reliable")
 func net_read_fragment(fragment_id: int) -> void:
 	if not GameState.is_host():
@@ -217,9 +228,12 @@ func _host_read_fragment(peer_id: int, fragment_id: int) -> void:
 		net_fragment_revealed.rpc(pod, fragment_id, symbol)
 
 
-@rpc("authority", "call_remote", "reliable")
+## call_local so the host's own player (and the offline human) also see the
+## symbol they just read; with call_remote only clients ever got the reveal.
+## The membership test keeps a rival pod's reads private.
+@rpc("authority", "call_local", "reliable")
 func net_fragment_revealed(pod_members: Array, fragment_id: int, symbol: String) -> void:
-	if pod_members.has(multiplayer.get_unique_id()) or not multiplayer.has_multiplayer_peer():
+	if pod_members.has(multiplayer.get_unique_id()):
 		fragment_revealed.emit(fragment_id, symbol)
 
 
