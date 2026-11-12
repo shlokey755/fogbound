@@ -63,6 +63,14 @@ var match_started: bool = false
 var match_over: bool = false
 
 # ---------------------------------------------------------------------------
+# Hosted lobby (the host owns these; clients receive copies, see
+# NetRouter.net_lobby_state). Empty in an offline match.
+# ---------------------------------------------------------------------------
+var player_names: Dictionary = {}  # peer_id -> String
+var player_ready: Dictionary = {}  # peer_id -> bool
+var room_title: String = ""
+
+# ---------------------------------------------------------------------------
 # Offline mode (one human + bots, no network peer). With no peer Godot's
 # default OfflineMultiplayerPeer makes this process its own host with
 # unique id 1, so the human is always peer 1 and bots take ids 2 and up.
@@ -89,6 +97,9 @@ func reset_match() -> void:
 	exit_sequence.clear()
 	match_started = false
 	match_over = false
+	player_names.clear()
+	player_ready.clear()
+	room_title = ""
 	final_scores.clear()
 	offline_mode = false
 	human_id = 1
@@ -101,6 +112,13 @@ func is_host() -> bool:
 
 func is_bot(peer_id: int) -> bool:
 	return bots.has(peer_id)
+
+
+## What to call a player in the lobby and above their character.
+func display_name(peer_id: int) -> String:
+	if is_bot(peer_id):
+		return "Bot %d" % peer_id
+	return player_names.get(peer_id, "Player %d" % (peer_id % 1000))
 
 
 ## Team id the offline human belongs to, or -1 (online, or not found).

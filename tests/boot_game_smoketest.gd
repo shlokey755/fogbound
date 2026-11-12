@@ -47,6 +47,10 @@ func _ready() -> void:
 	await _run_offline_autoplay_pass()
 	await _run_offline_elimination_pass()
 	await _run_offline_menu_pass()
+	await _run_lan_menu_pass()
+	await _run_lan_lobby_pass()
+	await _run_snapshot_and_hud_pass()
+	await _run_score_screen_pass()
 
 	print("ALL TESTS PASSED" if ok else "SOME TESTS FAILED")
 	get_tree().quit(0 if ok else 1)
@@ -482,3 +486,151 @@ func _run_offline_menu_pass() -> void:
 	var setup_scene: PackedScene = load("res://scenes/offline_setup.tscn")
 	_check("offline setup scene loads", setup_scene != null and setup_scene.can_instantiate())
 	await get_tree().process_frame
+
+
+# ---------------------------------------------------------------------------
+# Hosted (hotspot / Wi-Fi) play, single process. The two-process version of
+# this lives in tests/net_e2e.sh; here we cover everything that does not need
+# a second device: the menu, the lobby rules, the snapshot wire format, the
+# HUD line and the score screen.
+# ---------------------------------------------------------------------------
+
+func _run_lan_menu_pass() -> void:
+	var menu: Control = load("res://scenes/main_menu.tscn").instantiate()
+	add_child(menu)
+	var host_button: Button = menu.get_node("VBox/HostButton")
+	var join_button: Button = menu.get_node("VBox/JoinButton")
+	_check("main menu: has wired 'Host game' and 'Join game' buttons",
+		host_button.text.begins_with("Host") and join_button.text.begins_with("Join")
+		and host_button.pressed.get_connections().size() > 0 and join_button.pressed.get_connections().size() > 0)
+	_check("main menu: has a name field", menu.get_node("VBox/NameRow/NameField") is LineEdit)
+	menu.queue_free()
+
+	var join_scene: Control = load("res://scenes/join_screen.tscn").instantiate()
+	add_child(join_scene)
+	await get_tree().process_frame
+	_check("join screen: loads and starts scanning for rooms", join_scene is JoinScreen and NetLocal._scanning)
+	join_scene.queue_free()
+	await get_tree().process_frame
+	_check("join screen: leaving it stops the scan", not NetLocal._scanning)
+
+
+func _run_lan_lobby_pass() -> void:
+	# Private ports so this never collides with a Fogbound you have open.
+	NetLocal.game_port = 17777
+	NetLocal.discovery_port = 17778
+	SaveData.set_player_name("Tester", false)
+
+	var err := NetLocal.host_game("Test room")
+	_check("host: opening a room succeeds", err == OK and NetLocal.hosting and GameState.is_host())
+	_check("host: the lobby starts with the host in Pod A, named, ready",
+		GameState.teams.size() == 1 and GameState.player_team.get(1) == 0 and GameState.display_name(1) == "Tester"
+		and GameState.player_ready.get(1) == true and GameState.room_title == "Test room")
+
+	var check := NetRouter.host_check_can_start()
+	_check("host: a lone player cannot start (pod needs 2)", not check["ok"] and "at least 2" in check["reason"])
+
+	NetRouter.join_pod(NetRouter.NEW_POD)
+	_check("host: 'New pod' moves you out and the empty Pod A disappears",
+		GameState.teams.size() == 1 and GameState.player_team.get(1) == 1 and not GameState.teams.has(0))
+	NetRouter.join_pod(NetRouter.NEW_POD)
+	_check("host: 'New pod' while alone does not change anything useful",
+		GameState.teams.size() == 1 and GameState.teams[GameState.player_team[1]]["member_order"] == [1])
+	NetRouter.join_pod(99)
+	_check("host: joining a pod that does not exist is ignored", GameState.player_team.get(1) == 1 or GameState.player_team.get(1) == 0)
+	NetRouter.leave_pod()
+	_check("host: leaving your pod empties the lobby", GameState.teams.is_empty() and not GameState.player_team.has(1))
+	_check("host: with nobody in a pod the reason is clear",
+		not NetRouter.host_check_can_start()["ok"])
+	NetRouter.join_pod(NetRouter.NEW_POD)
+
+	NetRouter.host_set_level(2)
+	_check("host: choosing a level updates GameState", GameState.level_id == 2)
+	var other_id := -1
+	for lvl in LevelData.selectable_levels():
+		if lvl.id != 2:
+			other_id = lvl.id
+			break
+	NetRouter.host_set_level(other_id)
+	_check("host: choosing another level changes it", GameState.level_id == other_id)
+	NetRouter.host_set_level(9999)
+	_check("host: an unknown level is ignored", GameState.level_id == other_id)
+
+	NetRouter._host_set_name(1, "A|B\nC")
+	_check("host: names are cleaned of separators and control characters", GameState.display_name(1) == "ABC")
+	_check("display_name: unknown players get a readable fallback", GameState.display_name(123456).begins_with("Player "))
+
+	NetLocal.stop()
+	GameState.reset_match()
+	_check("stop: back to the default offline peer", NetLocal.hosting == false and multiplayer.multiplayer_peer is OfflineMultiplayerPeer)
+	NetLocal.game_port = NetLocal.DEFAULT_GAME_PORT
+	NetLocal.discovery_port = NetLocal.DEFAULT_DISCOVERY_PORT
+	SaveData.reload_for_test()
+
+
+func _run_snapshot_and_hud_pass() -> void:
+	OfflineSetup.configure_match(LevelData.default_level_id(), 2, 1, 2, BotBrain.Skill.NORMAL, 31337)
+	var game := _spawn_offline_game()
+	await _frames(20)
+
+	var bytes: PackedByteArray = game.encode_snapshot()
+	var snap: Dictionary = game.decode_snapshot(bytes)
+	var player_count: int = game.player_nodes.size()
+	_check("snapshot: every player survives the encode/decode round trip", snap["players"].size() == player_count)
+	var position_ok := true
+	for entry in snap["players"]:
+		var p: Player = game.player_nodes[entry["id"]]
+		if not entry["pos"].is_equal_approx(p.position):
+			position_ok = false
+	_check("snapshot: positions are exact", position_ok)
+	_check("snapshot: every rope is included", snap["links"].size() == game.tether_system.links.size() and snap["links"].size() > 0)
+	_check("snapshot: size is small (%d bytes for %d players)" % [bytes.size(), player_count], bytes.size() < 200)
+
+	# Break a rope on the host and make sure the snapshot says so.
+	var first = game.tether_system.links[0]
+	first.alive = false
+	var snap2: Dictionary = game.decode_snapshot(game.encode_snapshot())
+	_check("snapshot: a snapped rope is flagged as snapped",
+		snap2["links"].any(func(l): return l["a"] == first.a_id and l["b"] == first.b_id and l["state"] == game.LINK_SNAPPED))
+	first.alive = true
+
+	# Pretend to be a client: feed the snapshot into the client-side drawing.
+	game._client_links = snap["links"]
+	game._update_client_tether_lines()
+	_check("client view: one line is drawn per live rope", game.link_lines.size() == snap["links"].size())
+	game._client_links = snap2["links"].filter(func(l): return l["state"] != game.LINK_SNAPPED)
+	game._update_client_tether_lines()
+	_check("client view: a snapped rope's line is removed", game.link_lines.size() == snap["links"].size() - 1)
+	game._client_links = []
+
+	var text: String = game.hud_text()
+	_check("HUD: shows pod size, tablets and an objective ('%s')" % text,
+		text.begins_with("Pod ") and "Tablets 0/" in text and "Find the tablets" in text)
+	game._on_fragment_revealed(0, "#")
+	_check("HUD: counts tablets read", "Tablets 1/" in game.hud_text())
+	game._on_pod_unlocked([1])
+	_check("HUD: says the exit is open once the pod unlocks it", "EXIT OPEN" in game.hud_text())
+
+	game.queue_free()
+	await get_tree().process_frame
+	GameState.reset_match()
+
+
+func _run_score_screen_pass() -> void:
+	GameState.reset_match()
+	GameState.teams = {0: {"name": "Pod A", "original_size": 3, "member_order": [1, 2, 3]}}
+	GameState.player_names = {1: "Ann", 2: "Ben", 3: "Cy"}
+	GameState.final_scores = [{"pod": [1, 2], "team_id": 0, "points": 500}]
+	var screen: Control = load("res://scenes/score_screen.tscn").instantiate()
+	add_child(screen)
+	await get_tree().process_frame
+	var texts: Array = []
+	for child in screen.get_node("VBox/ResultsList").get_children():
+		if child is Label and not child.is_queued_for_deletion():
+			texts.append(child.text)
+	var joined := "\n".join(texts)
+	_check("score screen: shows the pod, its points and its members' names",
+		"Pod A" in joined and "500" in joined and "Ann" in joined and "Ben" in joined and not "Cy" in joined)
+	screen.queue_free()
+	await get_tree().process_frame
+	GameState.reset_match()

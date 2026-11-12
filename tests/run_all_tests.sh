@@ -22,6 +22,10 @@ echo "== Maze generator tests =="
 "$GODOT" --headless --path . --script res://tests/test_maze_generator.gd
 
 echo
+echo "== Net discovery tests (room finding protocol and address maths) =="
+"$GODOT" --headless --path . --script res://tests/test_net_discovery.gd
+
+echo
 echo "== Bot AI tests (navigation, mission, brain, simulated matches) =="
 "$GODOT" --headless --path . --script res://tests/test_bots.gd
 
@@ -41,6 +45,10 @@ if ! grep -q "^ALL TESTS PASSED" "$LOG"; then
 	echo "boot smoketest did not report ALL TESTS PASSED" >&2
 	exit 1
 fi
+
+echo
+echo "== Two-process hosted game (host + joiner over loopback, real scenes) =="
+GODOT="$GODOT" ./tests/net_e2e.sh
 
 echo
 echo "All test suites passed."
