@@ -67,18 +67,18 @@ Under the hood offline mode is not a separate game: with no network peer Godot's
 2. The main menu has three buttons:
    - **Play offline (bots)**: alone, nothing to set up.
    - **Host game**: you are the host. Others join you.
-   - **Join game**: lists the rooms found on your Wi-Fi/hotspot. Tap one to join.
+   - **Join game**: finds rooms by itself on the Wi-Fi/hotspot your device is on and lists them. Tap one to join. Nobody types an address.
 3. Move with WASD/arrow keys (desktop) or the on-screen joystick (touch). Walk into clue tablets to read them, bring your pod's combined knowledge to the console in the fog room, then get everyone to the exit gate while it's still unlocked.
 
 ### Hosting over a phone hotspot
 
 1. Turn on the hotspot on one phone (the host) and connect the other phones to it **in the phones' own Wi-Fi settings**. The game does not do this part.
-2. Host phone: open Fogbound and tap **Host game**. You land in the lobby; the banner shows your room name and the address other devices could type.
-3. Other phones: tap **Join game**. The host's room appears in the list within a couple of seconds; tap it.
+2. Host phone: open Fogbound and tap **Host game**. You land in the lobby; the banner shows your room name and how many players are in.
+3. Other phones: tap **Join game**. The host's room appears in the list within a couple of seconds; tap it. If the phone joined the hotspot after opening the screen, it notices on its own; **Search again** restarts the search.
 4. In the lobby the **host picks the level and (optionally) a seed**. Everyone sees the choice live. Everyone starts in Pod A; tap **New pod** or another pod's **Join** to split into teams (every pod needs 2+ players).
 5. Joiners tap **Ready**. When the status line says "Everyone is ready", the host taps **START**.
 
-If the room list stays empty (some hotspots block device-to-device discovery), type the host's address into the box on the join screen. The host's lobby banner shows it. A phone that joins after the match has started is turned away, and a host that leaves ends the game for everyone.
+If the room list stays empty, check that both phones are on the same hotspot, that the host has tapped **Host game**, and that mobile data is off on the joining phone. Some networks (public Wi-Fi, guest networks) stop devices from talking to each other, and nothing in the game can get around that; use a phone hotspot instead. A phone that joins after the match has started is turned away, and a host that leaves ends the game for everyone.
 
 ### Testing hosted play on one laptop
 

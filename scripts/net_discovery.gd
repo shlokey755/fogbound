@@ -130,3 +130,14 @@ static func scan_targets(local_lan_ips: Array) -> Array:
 			if candidate != ip and not targets.has(candidate):
 				targets.append(candidate)
 	return targets
+
+
+## The one-line status the join screen shows. Pure so it can be unit tested.
+## local_lan_ips: this device's own LAN addresses (empty = not on any Wi-Fi or
+## hotspot). room_count: rooms found so far.
+static func scan_hint(local_lan_ips: Array, room_count: int) -> String:
+	if local_lan_ips.is_empty():
+		return "Not connected to a Wi-Fi or hotspot. Open your phone's Wi-Fi settings, join the host's hotspot, then tap Search again."
+	if room_count == 0:
+		return "Searching for rooms on this Wi-Fi... The host must be on this same hotspot and have tapped Host game."
+	return "Tap a room to join."

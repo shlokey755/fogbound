@@ -91,8 +91,8 @@ func host_game(p_room_name: String = "") -> Error:
 	_host_udp = PacketPeerUDP.new()
 	var bind_err := _host_udp.bind(discovery_port)
 	if bind_err != OK:
-		# Not fatal: joiners can still type this device's address by hand.
-		push_warning("Fogbound: discovery port %d unavailable (%s); joiners must type the host address" % [discovery_port, bind_err])
+		# Not fatal for the host, but joiners will not see this room in their list.
+		push_warning("Fogbound: discovery port %d unavailable (%s); other devices will not find this room" % [discovery_port, bind_err])
 		_host_udp = null
 
 	NetRouter.host_open_lobby(SaveData.player_name())
@@ -201,7 +201,7 @@ func room_list() -> Array:
 	return list
 
 
-## "192.168.43.1" style address(es) other devices can type to reach this one.
+## This device's own Wi-Fi/hotspot address(es); empty means "not on a network".
 func my_addresses() -> Array:
 	return NetDiscovery.lan_addresses(IP.get_local_addresses())
 
@@ -244,6 +244,11 @@ func _room_reply() -> String:
 
 
 func _send_probes() -> void:
+	# Re-read this device's addresses every scan, so joining the hotspot (or
+	# leaving it) while the join screen is open is picked up without a restart.
+	var current := NetDiscovery.lan_addresses(IP.get_local_addresses())
+	var network_changed := current != _local_ips
+	_local_ips = current
 	var probe := NetDiscovery.PROBE.to_utf8_buffer()
 	for target in NetDiscovery.scan_targets(_local_ips):
 		if _scan_udp.set_dest_address(target, discovery_port) == OK:
@@ -255,7 +260,7 @@ func _send_probes() -> void:
 		if now - float(rooms[id]["seen"]) > ROOM_EXPIRES_AFTER:
 			rooms.erase(id)
 			changed = true
-	if changed:
+	if changed or network_changed:
 		rooms_changed.emit()
 
 

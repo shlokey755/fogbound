@@ -137,12 +137,7 @@ func _refresh() -> void:
 	var count := multiplayer.get_peers().size() + 1
 
 	var title: String = GameState.room_title if GameState.room_title != "" else "Fogbound"
-	if GameState.is_host():
-		var addresses: Array = NetLocal.my_addresses()
-		var where := " - join at %s" % addresses[0] if not addresses.is_empty() else ""
-		_banner.text = "%s%s  (%d/%d)" % [title, where, count, GameState.MAX_PLAYERS]
-	else:
-		_banner.text = "%s  (%d/%d)" % [title, count, GameState.MAX_PLAYERS]
+	_banner.text = "%s  (%d/%d)" % [title, count, GameState.MAX_PLAYERS]
 
 	var lvl: LevelData.LevelDef = LevelData.get_level(GameState.level_id)
 	_level_info.text = "%dx%d maze, %d fragments. %s" % [lvl.width, lvl.height, lvl.fragment_count, lvl.description]

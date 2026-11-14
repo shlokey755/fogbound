@@ -159,7 +159,7 @@ The first version had the host *announce* itself by broadcast, and joiners liste
 - Rooms are keyed by a random `host_id`, so one room answering from two addresses is listed once, and a room that stops answering leaves the list after 5 s.
 - Several joiners on one machine do not fight over a listening port, because only the host binds one.
 
-`NetDiscovery` is pure functions (no sockets), so `tests/test_net_discovery.gd` checks the wire format and address maths without a network. The manual address box on the join screen remains as a fallback for networks that block even unicast probing.
+`NetDiscovery` is pure functions (no sockets), so `tests/test_net_discovery.gd` checks the wire format and address maths without a network. The join screen has no address box: the list fills itself, `NetLocal` re-reads this device's addresses on every scan so joining the hotspot while the screen is open is noticed, and `NetDiscovery.scan_hint()` picks the status line (not on a network / searching / tap a room). **Search again** just restarts the scan. A network that blocks device-to-device traffic outright therefore shows an empty list.
 
 ### What clients draw
 

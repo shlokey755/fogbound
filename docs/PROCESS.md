@@ -759,11 +759,11 @@ Plan an afternoon for this the first time. Android setup problems are about the 
 Wi-Fi is set up **outside the game**, in the phones' settings. After that:
 
 1. The host taps **Host game**. The game opens the port **UDP 7777** (the game connection) and listens on **UDP 7778** (room finding), then shows the lobby.
-2. A joiner taps **Join game**. Every second or so it sends a tiny question ("any Fogbound here?") to this machine, to the broadcast address, and to every address in its own `x.y.z.1` to `x.y.z.254` range.
+2. A joiner taps **Join game**. Every second or so it sends a tiny question ("any Fogbound here?") to this machine, to the broadcast address, and to every address in its own `x.y.z.1` to `x.y.z.254` range. Nobody types an address; the list fills itself.
 3. The host answers each question with one line: room name, players, level, port. The joiner lists it.
 4. Tapping the room opens the game connection to port 7777. The host puts the new player in Pod A and sends the whole lobby to everyone.
 
-If step 2 or 3 is blocked by the network, the room list stays empty, but typing the host's address into the box on the join screen skips straight to step 4.
+If step 2 or 3 is blocked by the network, the room list stays empty. There is no address box to fall back on: the fix is a different network (part 9.3). The screen re-reads the phone's addresses on every search, so joining the hotspot while it is open works, and **Search again** restarts the search by hand.
 
 ### 9.2 Test on one laptop (no phones)
 
@@ -803,8 +803,8 @@ Things that trip people up:
 |---|---|---|---|
 | 1 | Phone A: turn on the hotspot | Hotspot is on | - |
 | 2 | Phone B (and C ...): connect to A's Wi-Fi in the phone settings | Wi-Fi shows connected, no internet is fine | Turn off mobile data on B; some phones prefer it over a Wi-Fi with no internet |
-| 3 | Phone A: open Fogbound, tap **Host game** | Lobby appears. Banner reads `Name's room - join at <address>` | If the address is missing, the phone has no Wi-Fi/hotspot address; check step 1 |
-| 4 | Phone B: tap **Join game** | Within a few seconds the room appears in the list | See the table below |
+| 3 | Phone A: open Fogbound, tap **Host game** | Lobby appears. Banner reads `Name's room  (1/16)` | If the joiners never see the room, check step 1 and the table below |
+| 4 | Phone B: tap **Join game** | Within a few seconds the room appears in the list. Until then the screen says what it is waiting for (not on a Wi-Fi, or searching) | Tap **Search again**; see the table below |
 | 5 | Tap the room | You land in the lobby; Phone A sees your name | If it says "The host did not answer": a firewall or the phone is blocking UDP 7777 |
 | 6 | B: tap **Ready**. A: tap **START** | Everyone loads the maze | Read the status line on A; it says exactly what is missing |
 | 7 | Walk around | Each phone moves its own character and sees the others | If movement looks jumpy, the Wi-Fi is weak; try standing closer |
@@ -814,12 +814,13 @@ Things that trip people up:
 | Likely cause | Check | Fix |
 |---|---|---|
 | Not on the same network | Both devices show the same Wi-Fi name | Reconnect |
+| Mobile data is winning over the hotspot | The hotspot has no internet and the phone quietly uses mobile data for apps | Turn off mobile data on the joining phone, then tap **Search again** |
 | The network isolates devices from each other ("AP isolation" or "client isolation", common on public Wi-Fi, guest networks and some hotspots) | A laptop on that network cannot ping a phone | Use a different hotspot, or a home router without isolation |
 | A firewall on a laptop host | Windows/macOS firewall asks and was denied | Allow the game on private networks |
 | The host is not hosting | Host phone is still on the menu | Tap **Host game** |
 | The match already started | The row says `[in progress]` | Wait or ask the host to open a new room |
 
-**The fallback that always works:** read the address in the host's lobby banner and type it into the box at the bottom of the join screen.
+**There is no typing fallback any more.** If the table above does not fix it, the network is blocking phone-to-phone traffic; use a different hotspot, or a home router without isolation.
 
 ### 9.4 What the network does not do (yet)
 

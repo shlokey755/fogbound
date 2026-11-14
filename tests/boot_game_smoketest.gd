@@ -495,6 +495,15 @@ func _run_offline_menu_pass() -> void:
 # HUD line and the score screen.
 # ---------------------------------------------------------------------------
 
+func _find_nodes(root: Node, class_name_: String) -> Array:
+	var found: Array = []
+	for child in root.get_children():
+		if child.is_class(class_name_):
+			found.append(child)
+		found.append_array(_find_nodes(child, class_name_))
+	return found
+
+
 func _run_lan_menu_pass() -> void:
 	var menu: Control = load("res://scenes/main_menu.tscn").instantiate()
 	add_child(menu)
@@ -510,6 +519,16 @@ func _run_lan_menu_pass() -> void:
 	add_child(join_scene)
 	await get_tree().process_frame
 	_check("join screen: loads and starts scanning for rooms", join_scene is JoinScreen and NetLocal._scanning)
+	_check("join screen: has no text box, nobody types an address", _find_nodes(join_scene, "LineEdit").is_empty())
+	var search_buttons := _find_nodes(join_scene, "Button").filter(func(b): return b.text == "Search again")
+	_check("join screen: has a 'Search again' button", search_buttons.size() == 1)
+	_check("join screen: status line is the discovery hint",
+		join_scene._status.text == NetDiscovery.scan_hint(NetLocal.my_addresses(), 0))
+	if search_buttons.size() == 1:
+		NetLocal.rooms["fake"] = {"host_id": "fake"}
+		search_buttons[0].pressed.emit()
+		_check("join screen: 'Search again' restarts the scan with an empty list",
+			NetLocal._scanning and not NetLocal.rooms.has("fake"))
 	join_scene.queue_free()
 	await get_tree().process_frame
 	_check("join screen: leaving it stops the scan", not NetLocal._scanning)

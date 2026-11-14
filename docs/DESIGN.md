@@ -349,7 +349,7 @@ The game code is written once against Godot's `multiplayer` API (RPCs, host auth
       (LAN / hotspot, UDP)                (online, P2P data channels)
                 |                                   |
       UDP broadcast discovery          Cloud signalling server (WebSocket)
-      or manual IP entry               room codes + STUN / TURN
+      (joiner probes, host replies)    room codes + STUN / TURN
 ```
 
 Rule: one transport per match. A single Godot multiplayer API instance uses one peer type, so mixed rooms (some players on hotspot, some online) are not supported. Local friends can also join an online room by code.
@@ -414,7 +414,7 @@ func _process(_d):
             print("Found room at ", udp.get_packet_ip())
 ```
 
-Some phone hotspots block broadcast. Always provide manual IP entry and optionally a QR code of the host IP.
+Some phone hotspots block broadcast. Joiners therefore send unicast probes to every address in their own subnet and hosts answer directly (see `docs/WALKTHROUGH.md`), so nobody has to type an IP address. A QR code of the host IP is an optional extra, not a requirement.
 
 ### 4.3 Online Mode: Room Code System
 
@@ -1055,7 +1055,7 @@ Suggested time for a solo student: 10 to 14 weeks part-time. Phase 6 is the risk
 | Unfair snaps on wall corners | Rope wrapping and the 1.5 s snag buffer |
 | Griefing (a player deliberately runs) | Pull cap below move speed, warning window, optional vote to cut a link |
 | 16 players over a phone hotspot | Compact snapshots, 20 Hz, positions as 16-bit values |
-| Broadcast blocked on some hotspots | Manual IP entry, QR code |
+| Broadcast blocked on some hotspots | Joiner-initiated unicast probes, no typing of addresses |
 | NAT traversal failures online | TURN fallback, clear error message, retry button |
 | TURN cost | Prefer direct P2P, cap match length, measure relay usage |
 | Room code guessing | Rate limits per IP, short room lifetime, lock on start |

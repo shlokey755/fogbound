@@ -13,6 +13,7 @@ func _init() -> void:
 	_test_probe()
 	_test_addresses()
 	_test_scan_targets()
+	_test_scan_hint()
 	print("")
 	if failures == 0:
 		print("net discovery: ALL PASSED")
@@ -103,3 +104,13 @@ func _test_scan_targets() -> void:
 			dup = true
 		seen[t] = true
 	_check("scan has no duplicate targets", not dup)
+
+
+func _test_scan_hint() -> void:
+	var offline := NetDiscovery.scan_hint([], 0)
+	_check("hint with no network tells you to join the hotspot", "hotspot" in offline and "Search again" in offline)
+	_check("no network wins even if a stale room is listed", NetDiscovery.scan_hint([], 2) == offline)
+	var searching := NetDiscovery.scan_hint(["192.168.43.17"], 0)
+	_check("hint on a network with no rooms says the host must tap Host game", "Host game" in searching and "same" in searching)
+	_check("hint with rooms says tap a room", NetDiscovery.scan_hint(["192.168.43.17"], 1) == "Tap a room to join.")
+	_check("none of the hints ask anyone to type an address", not ("type" in offline.to_lower() or "type" in searching.to_lower()))

@@ -3,12 +3,12 @@ extends Control
 ## JoinScreen
 ## "Join game": lists the rooms found on this Wi-Fi/hotspot. Tap one to join.
 ## The list fills in by itself (NetLocal sends discovery probes every second or
-## two); a manual address box at the bottom is the fallback for networks that
-## block discovery.
+## two) and nobody ever has to type an address. "Search again" restarts the
+## scan if the phone joined the hotspot after this screen opened.
 
 var _status: Label
 var _list: VBoxContainer
-var _address: LineEdit
+var _search_again: Button
 var _connecting := false
 
 
@@ -58,17 +58,10 @@ func _build_ui() -> void:
 	_list.add_theme_constant_override("separation", 2)
 	scroll.add_child(_list)
 
-	var manual := HBoxContainer.new()
-	page.add_child(manual)
-	_address = LineEdit.new()
-	_address.placeholder_text = "or type the host's address"
-	_address.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_address.text_submitted.connect(func(_t): _on_manual_pressed())
-	manual.add_child(_address)
-	var go := Button.new()
-	go.text = "Join"
-	go.pressed.connect(_on_manual_pressed)
-	manual.add_child(go)
+	_search_again = Button.new()
+	_search_again.text = "Search again"
+	_search_again.pressed.connect(_on_search_again_pressed)
+	page.add_child(_search_again)
 
 	var back := Button.new()
 	back.text = "Back"
@@ -78,6 +71,7 @@ func _build_ui() -> void:
 
 func _start_scanning() -> void:
 	_connecting = false
+	_search_again.disabled = false
 	NetLocal.start_scan()
 	_rebuild_list()
 
@@ -104,13 +98,7 @@ func _rebuild_list() -> void:
 		button.pressed.connect(func(): join_room(info))
 		_list.add_child(button)
 
-	if rooms.is_empty():
-		if NetDiscovery.lan_addresses(IP.get_local_addresses()).is_empty():
-			_status.text = "No Wi-Fi network found. Connect to the host's hotspot (phone Wi-Fi settings), then come back."
-		else:
-			_status.text = "Looking for rooms on this Wi-Fi... (the host taps Host game)"
-	else:
-		_status.text = "Tap a room to join."
+	_status.text = NetDiscovery.scan_hint(NetLocal.my_addresses(), rooms.size())
 
 	if NetLocal.auto_join and not rooms.is_empty() and not rooms[0]["started"]:
 		join_room(rooms[0])
@@ -121,12 +109,12 @@ func join_room(info: Dictionary) -> void:
 	_join(String(info["ip"]), int(info["port"]), String(info["name"]))
 
 
-func _on_manual_pressed() -> void:
-	var text := _address.text.strip_edges()
-	if text == "":
-		_status.text = "Type the host's address first (the host's lobby shows it)."
+func _on_search_again_pressed() -> void:
+	if _connecting:
 		return
-	_join(text, 0, text)
+	NetLocal.stop_scan()
+	NetLocal.rooms.clear()
+	_start_scanning()
 
 
 func _join(ip: String, port: int, label: String) -> void:
@@ -134,6 +122,7 @@ func _join(ip: String, port: int, label: String) -> void:
 		return
 	_connecting = true
 	NetLocal.stop_scan()
+	_search_again.disabled = true
 	_status.text = "Connecting to %s..." % label
 	NetLocal.join_game(ip, port)
 
