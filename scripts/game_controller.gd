@@ -38,6 +38,14 @@ var _commentary_popup_token: int = 0        # guards against two notes' auto-hid
 var _match_finish_sent := false             # the finish broadcast must go out exactly once
 var _zone_poll_t := 0.0
 
+# Client-side view of the host's ropes, refreshed from every snapshot.
+# Each entry: {"a": peer_id, "b": peer_id, "state": int (255 = snapped), "tension": float}
+var _client_links: Array = []
+var _revealed: Dictionary = {}   # fragment ids this pod has read (from NetRouter.fragment_revealed)
+var _exit_open := false          # this device's pod has opened the exit
+var _hud_label: Label
+var _hud_t := 0.0
+
 
 func _ready() -> void:
 	NetRouter.register_game_node(self)
@@ -45,22 +53,35 @@ func _ready() -> void:
 	NetRouter.fragment_revealed.connect(_on_fragment_revealed)
 	NetRouter.match_finished.connect(_on_match_finished)
 
-	_build_maze()
+	NetRouter.pod_unlocked.connect(_on_pod_unlocked)
 
-	if GameState.is_host() or not multiplayer.has_multiplayer_peer():
-		_host_spawn_players()
+	_build_maze()
+	# Everyone spawns every player: the host to simulate them, clients only to
+	# draw them (clients never move a body themselves, they follow snapshots).
+	_spawn_players()
+
+	if _is_authority():
 		_host_setup_tether_and_pods()
 		exit_gate.body_entered.connect(_on_exit_body_entered)
 		console_area.body_entered.connect(_on_console_body_entered)
 		if GameState.offline_mode:
 			_setup_offline_extras()
+	_add_quit_button()
+	_build_hud()
+
+
+## True on the device that runs the rules: the host of a hosted match, or the
+## only device in an offline match.
+func _is_authority() -> bool:
+	return GameState.is_host() or not multiplayer.has_multiplayer_peer()
 
 
 func _physics_process(delta: float) -> void:
 	_update_tether_lines()
 	_poll_zones(delta)
+	_update_hud(delta)
 
-	if GameState.is_host() or not multiplayer.has_multiplayer_peer():
+	if _is_authority():
 		_snapshot_accum += delta
 		if _snapshot_accum >= SNAPSHOT_INTERVAL:
 			_snapshot_accum = 0.0
@@ -140,7 +161,7 @@ func _paint_tilemap() -> void:
 # Players, tether, pods (host authoritative)
 # ---------------------------------------------------------------------------
 
-func _host_spawn_players() -> void:
+func _spawn_players() -> void:
 	var spawn_pos: Vector2 = (Vector2(maze.spawn_cell) + Vector2(0.5, 0.5)) * GameState.TILE_SIZE
 	var i := 0
 	for team_id in GameState.teams:
@@ -186,11 +207,12 @@ func _setup_offline_extras() -> void:
 		bot_controller = BotController.new()
 		add_child(bot_controller)
 		bot_controller.setup(self, maze)
-	_add_quit_button()
 
 
-## Offline matches have no lobby to fall back to, so give the player a way out
-## (button top-right, or Esc). Hosted matches end only by the rules.
+## A way out of the match (button top-right; Esc too when offline, where
+## there is no touch-screen "back" to trigger it by accident). In a hosted
+## match the host leaving ends the match for everyone and a client leaving
+## counts as a snapped rope, same as a dropped connection.
 func _add_quit_button() -> void:
 	var button := Button.new()
 	button.name = "QuitButton"
@@ -214,6 +236,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func quit_to_menu() -> void:
 	if NetRouter.match_finished.is_connected(_on_match_finished):
 		NetRouter.match_finished.disconnect(_on_match_finished)
+	NetLocal.stop()
 	GameState.reset_match()
 	get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
 
@@ -276,7 +299,9 @@ func _on_console_body_entered(body: Node) -> void:
 			known[frag_id] = true
 	if known.size() >= GameState.exit_sequence.size():
 		_console_entered_pods[key] = true
-		exit_gate.modulate = Color(1, 1, 1, 1)  # cosmetic: "unlocked" state; swap sprite frame in a real build
+		# Tell the pod's members (the RPC filters on membership) so their
+		# gate lights up and their HUD says "exit open".
+		NetRouter.broadcast_pod_unlocked(pod)
 
 
 func _on_exit_body_entered(body: Node) -> void:
@@ -366,7 +391,19 @@ func _pod_key(pod: Array) -> String:
 # Snapshot broadcast / apply
 # ---------------------------------------------------------------------------
 
+## Snapshot layout (host -> clients, 20 Hz, unreliable):
+##   u8 player count, then per player: u32 id, float x, float y, u8 eliminated
+##   u8 link count,   then per link:   u32 a_id, u32 b_id, u8 state, u8 tension
+## state is the tether's TensionState, or 255 once the rope has snapped;
+## tension is 0..255 meaning 0..100%. About 13 bytes per player and 10 per rope.
+const LINK_SNAPPED := 255
+
+
 func _broadcast_snapshot() -> void:
+	NetRouter.broadcast_snapshot(encode_snapshot())
+
+
+func encode_snapshot() -> PackedByteArray:
 	var buf := StreamPeerBuffer.new()
 	buf.put_u8(player_nodes.size())
 	for peer_id in player_nodes:
@@ -375,25 +412,45 @@ func _broadcast_snapshot() -> void:
 		buf.put_float(p.position.x)
 		buf.put_float(p.position.y)
 		buf.put_u8(1 if p.eliminated else 0)
-	NetRouter.broadcast_snapshot(buf.data_array)
+	buf.put_u8(tether_system.links.size())
+	for link in tether_system.links:
+		buf.put_u32(link.a_id)
+		buf.put_u32(link.b_id)
+		buf.put_u8(link.state if link.alive else LINK_SNAPPED)
+		buf.put_u8(int(clampf(link.tension, 0.0, 1.0) * 255.0))
+	return buf.data_array
 
 
-func apply_snapshot(packed: PackedByteArray) -> void:
-	if GameState.is_host():
-		return  # host is authoritative, never overwrite with its own echo
+## Pure decoding, so a test can check the wire format without a network.
+## Returns {"players": [{id, pos, eliminated}], "links": [{a, b, state, tension}]}.
+static func decode_snapshot(packed: PackedByteArray) -> Dictionary:
 	var buf := StreamPeerBuffer.new()
 	buf.data_array = packed
-	var count := buf.get_u8()
-	for i in range(count):
+	var players: Array = []
+	for i in range(buf.get_u8()):
 		var peer_id := buf.get_u32()
 		var x := buf.get_float()
 		var y := buf.get_float()
-		var eliminated := buf.get_u8() == 1
-		if player_nodes.has(peer_id):
-			var p: Player = player_nodes[peer_id]
-			if not p.is_local:
-				p.position = p.position.lerp(Vector2(x, y), 0.3)
-			p.eliminated = eliminated
+		players.append({"id": peer_id, "pos": Vector2(x, y), "eliminated": buf.get_u8() == 1})
+	var links: Array = []
+	for i in range(buf.get_u8()):
+		var a_id := buf.get_u32()
+		var b_id := buf.get_u32()
+		var state := buf.get_u8()
+		links.append({"a": a_id, "b": b_id, "state": state, "tension": buf.get_u8() / 255.0})
+	return {"players": players, "links": links}
+
+
+func apply_snapshot(packed: PackedByteArray) -> void:
+	if _is_authority():
+		return  # the host is authoritative, never overwrite it with its own echo
+	var snap := decode_snapshot(packed)
+	for entry in snap["players"]:
+		if player_nodes.has(entry["id"]):
+			var p: Player = player_nodes[entry["id"]]
+			p.set_net_target(entry["pos"])
+			p.eliminated = entry["eliminated"]
+	_client_links = snap["links"]
 
 
 # ---------------------------------------------------------------------------
@@ -401,24 +458,52 @@ func apply_snapshot(packed: PackedByteArray) -> void:
 # ---------------------------------------------------------------------------
 
 func _update_tether_lines() -> void:
-	if GameState.is_host() or not multiplayer.has_multiplayer_peer():
-		for link in tether_system.links:
-			var key: String = "%d:%d" % [link.a_id, link.b_id]
-			if not link.alive:
-				if link_lines.has(key):
-					link_lines[key].queue_free()
-					link_lines.erase(key)
-				continue
-			if not link_lines.has(key):
-				var line := Line2D.new()
-				line.width = 2.0
-				tether_lines.add_child(line)
-				link_lines[key] = line
-			var line: Line2D = link_lines[key]
-			# Design doc 8.4: you see your OWN pod's ropes through the fog, not rivals'.
-			line.visible = not GameState.offline_mode or link.a.team_id == GameState.human_team_id()
-			line.points = link.path if link.path.size() > 0 else PackedVector2Array([link.a.position, link.b.position])
-			line.default_color = _tension_color(link.state)
+	if not _is_authority():
+		_update_client_tether_lines()
+		return
+	for link in tether_system.links:
+		var key: String = "%d:%d" % [link.a_id, link.b_id]
+		if not link.alive:
+			if link_lines.has(key):
+				link_lines[key].queue_free()
+				link_lines.erase(key)
+			continue
+		if not link_lines.has(key):
+			var created := Line2D.new()
+			created.width = 2.0
+			tether_lines.add_child(created)
+			link_lines[key] = created
+		var line: Line2D = link_lines[key]
+		# Design doc 8.4: you see your OWN pod's ropes through the fog, not rivals'.
+		line.visible = not GameState.offline_mode or link.a.team_id == GameState.human_team_id()
+		line.points = link.path if link.path.size() > 0 else PackedVector2Array([link.a.position, link.b.position])
+		line.default_color = _tension_color(link.state)
+
+
+## Clients draw each rope as a straight line between the two (interpolated)
+## players, coloured by the state the host sent. The host's lines also bend
+## around wall corners; that detail is not sent over the network.
+func _update_client_tether_lines() -> void:
+	var live := {}
+	for link in _client_links:
+		if link["state"] == LINK_SNAPPED:
+			continue
+		if not player_nodes.has(link["a"]) or not player_nodes.has(link["b"]):
+			continue
+		var key: String = "%d:%d" % [link["a"], link["b"]]
+		live[key] = true
+		if not link_lines.has(key):
+			var created := Line2D.new()
+			created.width = 2.0
+			tether_lines.add_child(created)
+			link_lines[key] = created
+		var line: Line2D = link_lines[key]
+		line.points = PackedVector2Array([player_nodes[link["a"]].position, player_nodes[link["b"]].position])
+		line.default_color = _tension_color(link["state"])
+	for key in link_lines.keys():
+		if not live.has(key):
+			link_lines[key].queue_free()
+			link_lines.erase(key)
 
 
 func _tension_color(state: int) -> Color:
@@ -442,7 +527,81 @@ func _on_link_snapped_visual(a_id: int, b_id: int) -> void:
 
 
 func _on_fragment_revealed(fragment_id: int, symbol: String) -> void:
+	_revealed[fragment_id] = true
 	clue_spawner.reveal_symbol(fragment_id, symbol)
+
+
+## Only fires on devices whose pod opened the exit (NetRouter filters).
+func _on_pod_unlocked(_pod: Array) -> void:
+	_exit_open = true
+	exit_gate.modulate = Color(1, 1, 1, 1)
+
+
+# ---------------------------------------------------------------------------
+# HUD: a one-line objective so a player always knows what to do next
+# ---------------------------------------------------------------------------
+
+func _build_hud() -> void:
+	_hud_label = Label.new()
+	_hud_label.name = "StatusLabel"
+	_hud_label.add_theme_font_size_override("font_size", 8)
+	_hud_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 1))
+	_hud_label.add_theme_constant_override("outline_size", 3)
+	_hud_label.position = Vector2(3, 1)
+	$HUD.add_child(_hud_label)
+	_hud_t = 0.0
+
+
+func _update_hud(delta: float) -> void:
+	_hud_t -= delta
+	if _hud_t > 0.0 or _hud_label == null:
+		return
+	_hud_t = 0.25
+	_hud_label.text = hud_text()
+
+
+## "Pod 3 | Tablets 2/5 | Find the tablets" -- the pod size is the number of
+## players joined to you by unbroken ropes, so it drops the moment one snaps.
+func hud_text() -> String:
+	var total: int = GameState.exit_sequence.size()
+	var objective: String
+	if _exit_open:
+		objective = "EXIT OPEN: everyone to the gate!"
+	elif _revealed.size() >= total:
+		objective = "All tablets read: go to the console"
+	else:
+		objective = "Find the tablets"
+	return "Pod %d | Tablets %d/%d | %s" % [_local_pod_size(), _revealed.size(), total, objective]
+
+
+func _local_pod_size() -> int:
+	var my_id := multiplayer.get_unique_id() if multiplayer.has_multiplayer_peer() else GameState.human_id
+	var p: Player = player_nodes.get(my_id)
+	if p != null and p.eliminated:
+		return 0
+	var edges: Array = []
+	if _is_authority():
+		for link in tether_system.links:
+			if link.alive:
+				edges.append([link.a_id, link.b_id])
+	else:
+		for link in _client_links:
+			if link["state"] != LINK_SNAPPED:
+				edges.append([link["a"], link["b"]])
+	var seen := {my_id: true}
+	var frontier: Array = [my_id]
+	while not frontier.is_empty():
+		var current: int = frontier.pop_back()
+		for edge in edges:
+			var other := -1
+			if edge[0] == current:
+				other = edge[1]
+			elif edge[1] == current:
+				other = edge[0]
+			if other != -1 and not seen.has(other):
+				seen[other] = true
+				frontier.append(other)
+	return seen.size()
 
 
 func _on_match_finished() -> void:

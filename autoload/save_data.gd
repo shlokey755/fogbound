@@ -33,6 +33,11 @@ var _seen_commentary: Dictionary = {}  # commentary node id (String) -> true
 ## writing the flag. Cleared by consume_just_unlocked() once read.
 var _just_unlocked: int = -1
 
+## Name shown to other players in a hosted lobby and above your character.
+## Empty until the player types one; player_name() then falls back to the
+## device model or the computer's user name.
+var _player_name: String = ""
+
 
 func _ready() -> void:
 	_load()
@@ -59,6 +64,31 @@ func consume_just_unlocked() -> int:
 	return id
 
 
+## The name to show for this device. Never empty.
+func player_name() -> String:
+	var shown := NetDiscovery.sanitize(_player_name, 16)
+	return shown if shown != "" else default_player_name()
+
+
+## `persist = false` keeps the name for this run only (used by the --name=
+## test shortcut, so a throwaway "Ann" window never overwrites your real name).
+func set_player_name(value: String, persist: bool = true) -> void:
+	_player_name = NetDiscovery.sanitize(value, 16)
+	if persist:
+		_save()
+
+
+static func default_player_name() -> String:
+	var model := OS.get_model_name()
+	if model != "" and model != "GenericDevice":
+		return NetDiscovery.sanitize(model, 16)
+	for var_name in ["USERNAME", "USER"]:
+		var user := NetDiscovery.sanitize(OS.get_environment(var_name), 16)
+		if user != "":
+			return user
+	return "Player"
+
+
 func has_seen_commentary(node_id: String) -> bool:
 	return _seen_commentary.has(node_id)
 
@@ -83,6 +113,7 @@ func reload_for_test() -> void:
 	_unlocked_levels.clear()
 	_seen_commentary.clear()
 	_just_unlocked = -1
+	_player_name = ""
 	_load()
 
 
@@ -92,12 +123,14 @@ func _load() -> void:
 		return  # first run, or no save yet -- fine, defaults stand
 	_unlocked_levels = cfg.get_value("levels", "unlocked", {})
 	_seen_commentary = cfg.get_value("commentary", "seen", {})
+	_player_name = cfg.get_value("profile", "name", "")
 
 
 func _save() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("levels", "unlocked", _unlocked_levels)
 	cfg.set_value("commentary", "seen", _seen_commentary)
+	cfg.set_value("profile", "name", _player_name)
 	var err := cfg.save(_save_path())
 	if err != OK:
 		push_warning("Fogbound: could not write save file (%s) -- unlocks won't persist this session" % err)

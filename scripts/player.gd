@@ -33,12 +33,13 @@ var _has_art := false          # false until a sprite sheet loads; the ColorRect
 var _last_pos := Vector2.ZERO  # for deriving facing/walking from actual motion (works on clients too)
 var _facing := "down"          # "down" | "up" | "side"
 var _kb_active := false        # keyboard was giving a direction last tick (so we can send exactly one "stop")
+var _net_target := Vector2.INF # where the host says this player is (clients only)
 
 
 func _ready() -> void:
 	is_local = not is_bot and ((peer_id == multiplayer.get_unique_id()) or (not multiplayer.has_multiplayer_peer()))
 	if label:
-		label.text = ("B%d" % peer_id) if is_bot else str(peer_id)
+		label.text = ("B%d" % peer_id) if is_bot else GameState.display_name(peer_id).substr(0, 8)
 	_setup_sprite()
 	_update_light_radius()
 	if is_local:
@@ -145,6 +146,9 @@ func _physics_process(delta: float) -> void:
 		velocity = move + capped_pull
 		move_and_slide()
 
+	elif _net_target != Vector2.INF:
+		position = position.lerp(_net_target, 1.0 - exp(-delta * 18.0))
+
 	pull_velocity -= pull_velocity * GameState.TETHER_PULL_FRICTION * delta
 	pull_cap = 0.0
 
@@ -154,6 +158,14 @@ func _physics_process(delta: float) -> void:
 
 func set_input(dir: Vector2) -> void:
 	input_dir = dir
+
+
+## Clients: the host's latest position for this player. The body glides to it
+## in _physics_process so 20 snapshots a second look like smooth motion.
+func set_net_target(target: Vector2) -> void:
+	if _net_target == Vector2.INF:
+		position = target  # first snapshot: appear in the right place at once
+	_net_target = target
 
 
 func _update_light_radius() -> void:

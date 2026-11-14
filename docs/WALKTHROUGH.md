@@ -17,8 +17,8 @@ The minimum viable version from the design doc (section 16) is implemented and p
 | 2-member elimination rule | `scripts/game_controller.gd` | Done |
 | Clue fragments + console unlock | `scripts/clue.gd`, `scripts/clue_spawner.gd` | Done (one clue type: symbol tablets) |
 | Exit + tiered scoring | `scripts/game_controller.gd`, `autoload/score_table.gd` | Done, unit-tested |
-| Local Wi-Fi hotspot multiplayer | `autoload/net_local.gd`, `autoload/net_router.gd` | Done |
-| Lobby (pod assignment, ready/start) | `scripts/lobby.gd`, `scripts/pod_card.gd` | Done, minimal UI |
+| Local Wi-Fi hotspot multiplayer, room discovery | `autoload/net_local.gd`, `scripts/net_discovery.gd`, `autoload/net_router.gd` | Done, tested with two processes |
+| Host/Join screens and the host-run lobby | `scripts/main_menu.gd`, `scripts/join_screen.gd`, `scripts/lobby.gd` | Done |
 | Online room-code multiplayer | `autoload/net_online.gd`, `server/` | **Scaffolded, not wired up** — see Phase 6 |
 | Level table, per-level themes, secret level | `autoload/level_data.gd`, `autoload/save_data.gd` | Done, tested |
 | Seeded puzzle rooms + tunnel chain | `scripts/maze_generator.gd` | Done, unit-tested |
@@ -27,7 +27,7 @@ The minimum viable version from the design doc (section 16) is implemented and p
 | Offline mode + bots | `scripts/offline_setup.gd`, `scripts/bot_*.gd` | Done, tested — see section 8b |
 | Tile art, prop art, audio | — | **Not started** — see `docs/ART_WALKTHROUGH.md` |
 
-Four headless test suites cover the logic layer; see "Testing" below.
+Headless test suites cover the logic layer and a real two-process hosted game; see "Testing" below.
 
 ---
 
@@ -38,9 +38,11 @@ autoload/     Singletons (always loaded, see project.godot [autoload]):
                 game_state.gd   - match state + all tunable constants
                 score_table.gd  - scoring tiers
                 net_router.gd   - all game RPCs, transport-agnostic
-                net_local.gd    - ENet hotspot transport
+                net_local.gd    - ENet hotspot transport + room discovery
+                save_data.gd    - per-device save (unlocks, player name)
+                level_data.gd   - the level table
                 net_online.gd   - WebRTC transport (NOT in [autoload] yet)
-scenes/       .tscn files: main_menu, lobby, game, player, clue, pod_card, score_screen, touch_joystick
+scenes/       .tscn files: main_menu, join_screen, lobby, offline_setup, game, player, clue, score_screen, touch_joystick
 scripts/      Gameplay logic (see table above)
 shaders/      Palette-swap shader for team colors
 assets/       Placeholder art (currently just flat-color rectangles built in code)
@@ -140,19 +142,46 @@ Rather than a flat screen-space shader, this uses Godot's actual 2D lighting: ea
 
 The host (`GameState.is_host()`) runs maze generation output validation, tether physics, the pod graph, clue notebooks, console/exit checks, and scoring. Clients send input (`net_input`, unreliable — stale packets are just dropped, the next one supersedes it) and receive position snapshots (`net_snapshot`, unreliable, ~20 Hz) plus reliable events for anything that must not be dropped: link snaps, fragment reads, match-finished.
 
-### Running it locally without real hotspot hardware
+### The hosted flow, end to end
 
-Use Godot's **Debug → Run Multiple Instances** (set to 2–4) so each instance is a genuinely separate process with its own peer id, all connecting over `localhost`. This is how `tests/boot_smoketest.tscn` effectively tests a single-process version of the same path (it instantiates `game.tscn` directly with `GameState` pre-populated, without going through real networking at all — see "Testing" below).
+1. **Wi-Fi first, outside the game.** Every phone joins the hotspot in its own settings.
+2. **Host game** (`NetLocal.host_game()`): opens an ENet server on UDP 7777, binds UDP 7778 to answer room-finding probes, and opens the lobby with the host in Pod A.
+3. **Join game** (`scripts/join_screen.gd`): `NetLocal.start_scan()` sends probes every 1.5 s; each reply becomes a row in the room list. Tapping a row calls `NetLocal.join_game(ip, port)`.
+4. The lobby (section 7) runs on the host. START sends `net_start_match` to everyone, and every device loads `game.tscn`.
+5. In the game, the host simulates everything. A joiner only sends its direction (`net_input`) and draws what the host's 20 Hz snapshots say.
 
-For real hardware testing: the host turns on its phone's Wi-Fi hotspot, other devices join that Wi-Fi, then enter the host's hotspot IP in the Join field. LAN broadcast discovery is attempted (`net_local.gd`'s `start_advertising`/`start_listening`) but isn't reliable on every hotspot — some block client-to-client broadcast entirely — so manual IP entry is the dependable path and is always available in the UI.
+### How a joiner finds the host (`scripts/net_discovery.gd`)
+
+The first version had the host *announce* itself by broadcast, and joiners listen. That is the first thing phone hotspots and routers drop, and a joiner would just see an empty list. So it is reversed: the **joiner asks, the host answers**.
+
+- The joiner sends a short probe (`FOGBOUND?|1`) by unicast to: this machine, the limited broadcast, each local subnet's broadcast, and *every address in its own /24* (a hotspot network is tiny: about 250 packets of 12 bytes, once every 1.5 s).
+- The host answers each probe directly with one line: `FOGBOUND|1|host_id|room|players|max|level|port|started`.
+- Rooms are keyed by a random `host_id`, so one room answering from two addresses is listed once, and a room that stops answering leaves the list after 5 s.
+- Several joiners on one machine do not fight over a listening port, because only the host binds one.
+
+`NetDiscovery` is pure functions (no sockets), so `tests/test_net_discovery.gd` checks the wire format and address maths without a network. The join screen has no address box: the list fills itself, `NetLocal` re-reads this device's addresses on every scan so joining the hotspot while the screen is open is noticed, and `NetDiscovery.scan_hint()` picks the status line (not on a network / searching / tap a room). **Search again** just restarts the scan. A network that blocks device-to-device traffic outright therefore shows an empty list.
+
+### What clients draw
+
+Clients spawn every player (so they can draw them) but never move a body themselves. A snapshot is: for each player `id, x, y, eliminated`, then for each rope `a, b, state, tension` (`state` 255 means snapped). `Player.set_net_target()` glides each body to its latest position; clients draw ropes as straight lines coloured by the state the host sent (the host's own lines also bend around corners, which is not sent). The HUD line ("Pod 2 | Tablets 1/8 | ...") is built from the same data. When a pod opens the exit, only that pod's members are told (`net_pod_unlocked`), so a rival pod's progress stays private.
+
+### Running it on one machine
+
+`tools/run_instances.sh 2` (or `.bat` on Windows) opens several windows: window 1 runs `--auto-host`, the rest `--auto-join`, each with a `--name=`. Those are game arguments after `--` (see `scripts/main_menu.gd`); `--game-port=` and `--discovery-port=` move the ports (the automated test uses them so it never collides with a game you have open).
+
+For real hardware: see `docs/PROCESS.md`, "Testing on real phones".
 
 ---
 
-## 7. The lobby (`scripts/lobby.gd`, `scripts/pod_card.gd`)
+## 7. The lobby (`scripts/lobby.gd`, `autoload/net_router.gd`)
 
-Clients request to join a pod (`NetRouter.request_join_pod`, routed to the host via `rpc_id(1, ...)`); the host validates and rebroadcasts the full lobby state to everyone (`net_lobby_state`, reliable, `call_local` so the host's own UI updates too). This "client proposes, host decides, host broadcasts truth" pattern is the same shape as the rest of the networking and is worth keeping consistent — it means there's never a case where two clients have different ideas about who's in which pod.
+The lobby UI is built in code (`Lobby._build_ui`) so the same script serves the host and clients: the host gets a level dropdown, a seed box and START; clients get a read-only level line and a Ready toggle. Both get the room banner, the pod list with Join buttons, **New pod**, **Leave** and a status line.
 
-`NetRouter.host_check_can_start()` encodes the design doc's section 6.3 start conditions (every pod ≥ 2 members, at least one pod exists) and is called both to enable/disable the host's Start button and to produce the human-readable reason shown in the status label when it's disabled.
+All lobby state lives on the host (`GameState.teams`, `player_names`, `player_ready`, `level_id`, `room_title`). A client only ever sends a *request* (`request_join_pod`, `request_set_ready`, `request_set_name`, ...); the host validates it using `multiplayer.get_remote_sender_id()` and then re-broadcasts the **whole** lobby (`net_lobby_state`, a few hundred bytes). Sending everything every time means a device that joins late, or misses a packet, is fixed by the next update. Everyone defaults into Pod A, so the common case is: join, ready, host presses START.
+
+A subtlety that cost a bug: an RPC addressed to your own id never runs. So the host's own button presses do not RPC to itself; `NetRouter.join_pod()` and friends apply them directly when `GameState.is_host()`.
+
+`NetRouter.host_check_can_start()` encodes the design doc's section 6.3 start conditions (everyone in a pod, every pod at least 2, every client ready) and returns the reason shown under the pod list while START is blocked.
 
 ---
 
@@ -218,10 +247,21 @@ Playing alone exposed things the hotspot MVP never needed:
 | Menus overflowed the 320x180 viewport | `CompactTheme` shrinks the font |
 | Out-of-maze space rendered grey | Default clear colour is near-black |
 
+And making hosted play testable exposed more (found by the two-process test and the lobby tests):
+
+| Gap | Fix |
+|---|---|
+| Joining devices never spawned any `Player` nodes (an empty screen) | Every device spawns every player; clients only follow snapshots (`Player.set_net_target`) |
+| Clients never saw ropes or knew when their exit opened | Snapshots carry each rope's state; `net_pod_unlocked` tells a pod's own members |
+| The host's own lobby clicks did nothing (an RPC to yourself never runs) | The host applies its own requests directly |
+| A player could end up listed in two pods | One `_host_move_to_pod` removes you from every other pod first |
+| A late joiner saw a stale lobby | The host re-broadcasts the whole lobby after every change |
+| The host could select a level id that does not exist (`get_level` silently falls back to level 0) | `host_set_level` checks the id itself |
+| A test window's `--name=` overwrote your saved player name | `--name=` lasts for that run only |
+
 ### Known limitations
 
 - Bots are not added to hosted/online matches. If you do, ids 2.. would collide with real peer ids.
-- A hotspot client does not spawn `Player` nodes in the MVP (hosted play limitation, unrelated to bots).
 - Rival bots never interact with you (no blocking, no stealing fragments).
 - The secret level can be unlocked from an offline win.
 
@@ -246,7 +286,7 @@ Follow design doc section 8 (sizes, the per-team palette-swap shader already stu
 
 ## 10. Testing
 
-Four independent suites, none requiring the editor:
+Everything is headless and none of it needs the editor:
 
 ```bash
 GODOT=/path/to/godot ./tests/run_all_tests.sh
@@ -256,10 +296,14 @@ GODOT=/path/to/godot ./tests/run_all_tests.sh
 |---|---|---|
 | `tests/test_pod_graph.gd` | Chain/split/remove graph logic, score tiers | `godot --headless --script ...` (pure logic, no scene) |
 | `tests/test_maze_generator.gd` | Determinism for a given seed, structural sanity (special cells are floor, border is solid, fragments don't overlap the fog room or exit), commentary placement, and the seeded puzzle rooms / tunnel chain (45 checks across many seeds) | Same, pure logic |
+| `tests/test_net_discovery.gd` | The room-finding message format (round trip, garbage rejected, names cannot break it) and the address maths (private ranges, the /24 scan list) | Same, pure logic |
 | `tests/test_bots.gd` | Bot navigation and line of sight, fog-fair knowledge, mission priorities and stickiness, steering hysteresis, solo bots finishing every level, two-bot rope sims (longest rope per skill), the skill table | `--script`, pure logic over a generated maze |
-| `tests/boot_smoketest.tscn` + `tests/boot_game_smoketest.gd` | Actually instantiates `game.tscn` with real autoloads, spawns real players, builds a real tether link, runs ~2 seconds of physics. Also checks every real level in `LevelData`, the character sprite pipeline, the secret-level unlock flow, and offline mode: config and the 16-player cap, scene wiring (camera, lights, ropes, bot follow), two complete autoplay matches, elimination ending the match, the menu and Menu button | `godot --headless --fixed-fps 60 --path . res://tests/boot_smoketest.tscn` (a real scene boot, *not* `--script`, because `--script` mode does not run project autoloads. `--fixed-fps 60` runs physics as fast as the CPU allows: the two autoplay matches, about five simulated minutes, take a couple of seconds) |
+| `tests/boot_smoketest.tscn` + `tests/boot_game_smoketest.gd` | Real scenes with real autoloads: every level in `LevelData`, the character sprite pipeline, the secret-level unlock, offline mode (config, the 16-player cap, wiring, two complete autoplay matches, elimination), the Host/Join/Offline menu, the host's lobby rules, the snapshot wire format, the HUD line, the score screen | `godot --headless --fixed-fps 60 --path . res://tests/boot_smoketest.tscn` (a real scene boot, *not* `--script`, because `--script` mode does not run project autoloads. `--fixed-fps 60` runs physics as fast as the CPU allows) |
+| `tests/net_e2e.sh` | **Two real processes** over this machine's loopback, driving the real menu, join screen, lobby and game: discovery finds the room, the joiner connects, names/pods/level sync, Ready gates START, the joiner spawns with a camera, its key press moves its player on the host and on its own screen, and the rope is drawn on the joiner | Real time (about 15 s) on ports 27777/27778 |
 
-All four currently pass against Godot 4.3-stable. A parse error in the smoketest script leaves its scene idling instead of failing, so `run_all_tests.sh` wraps it in a timeout and requires `ALL TESTS PASSED` in the output. If you add a new system, prefer extending the pure-logic suites (fast, no scene tree) and reserve the boot smoketest for things that only break when real nodes and autoloads are involved (like the `TileSet`-must-be-attached-before-touching-TileData ordering bug noted in `maze_tileset_builder.gd` — that class of bug is invisible to a pure unit test).
+A parse error in the smoketest script leaves its scene idling instead of failing, so `run_all_tests.sh` wraps it in a timeout and requires `ALL TESTS PASSED` in the output. If you add a new system, prefer extending the pure-logic suites (fast, no scene tree) and reserve the boot smoketest for things that only break when real nodes and autoloads are involved (like the `TileSet`-must-be-attached-before-touching-TileData ordering bug noted in `maze_tileset_builder.gd`). Use the e2e test for anything that only shows up with two processes.
+
+What is not covered: real phones and real hotspots. Discovery uses plain UDP; a hotspot that isolates devices from each other will stop it (and the game) no matter what the code does. Test on one before shipping.
 
 ---
 
@@ -281,7 +325,7 @@ Explicitly out of scope even after this phase (see design doc section 4.9 and op
 
 1. Run the test suite (section 10) to confirm your Godot install works with the project.
 2. Open `game.tscn` directly in the editor and run it standalone (no networking) to see the maze/fog/tether loop with one player.
-3. Use Run Multiple Instances to get 2+ players tethered together locally and deliberately snap a link.
+3. Run `tools/run_instances.sh 2` to get 2+ players tethered together locally and deliberately snap a link.
 4. Read `docs/DESIGN.md` sections 3 and 5 side-by-side with `tether_system.gd` — the code comments point back to specific design doc sections throughout.
 5. Move on to real art (section 9 above) once the loop feels right — don't polish placeholder-art gameplay you might still rebalance.
 6. Save online play (section 11) for last, after local play is confirmed fun. It's the highest-risk, most isolated piece.
